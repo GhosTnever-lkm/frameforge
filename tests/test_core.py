@@ -165,6 +165,22 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertIn("+50.0 (+100.0%)", report)
         self.assertIn("одинаковой сцене", report)
 
+    def test_benchmark_comparison_reports_distribution_and_different_sample_warning(self):
+        before = analyze_frame_times("baseline.csv", [10.0] * 100)
+        after = analyze_frame_times("variant.csv", [20.0] * 50)
+        report = compare_benchmarks(before, after)
+        self.assertIn("Baseline (A)", report)
+        self.assertIn("Variant (B)", report)
+        self.assertIn("отличается более чем на 5%", report)
+        self.assertIn("16.667–33.333 мс", report)
+        self.assertIn("A 0.0% → B 100.0%", report)
+
+    def test_benchmark_comparison_does_not_warn_for_close_sample_sizes(self):
+        before = analyze_frame_times("baseline.csv", [10.0] * 100)
+        after = analyze_frame_times("variant.csv", [10.0] * 96)
+        report = compare_benchmarks(before, after)
+        self.assertNotIn("отличается более чем на 5%", report)
+
     def test_benchmark_history_roundtrip_omits_source_paths_and_raw_samples(self):
         path = Path(self.temp.name) / "benchmarks.json"
         store = BenchmarkStore(path)

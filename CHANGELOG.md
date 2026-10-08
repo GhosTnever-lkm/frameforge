@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 - 2026-10-09
+
+- Improve benchmark comparisons with per-bucket normalized shares and percentage-point deltas in the text report.
+- Warn when baseline and variant sample counts differ by more than 5%; label runs as Baseline (A) and Variant (B).
+- Clarify that run differences alone do not establish that a setting caused the change.
+
 ## 0.3.0 - 2026-10-09
 
 - Persist up to 100 benchmark summaries locally across application restarts.

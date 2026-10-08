@@ -19,8 +19,8 @@ class FrameTimeChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(260)
-        self.setAccessibleName("Распределение времени кадров до и после")
-        self.setToolTip("Доля кадров по диапазонам времени кадра в миллисекундах; границы диапазонов не включаются справа")
+        self.setAccessibleName("Сравнение распределения времени кадра: Baseline A и Variant B")
+        self.setToolTip("Доля кадров по диапазонам времени кадра в миллисекундах; меньше — короче кадр. Сравнение прогонов само по себе не доказывает эффект настройки.")
         self._before: Benchmark | None = None
         self._after: Benchmark | None = None
 
