@@ -1,4 +1,6 @@
 import hashlib
+import csv
+import io
 import json
 import tempfile
 import unittest
@@ -203,6 +205,34 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertEqual(data["baseline_a"]["frame_time_bucket_counts"], list(before.frame_time_buckets))
         self.assertEqual(data["variant_b"]["sample_count"], 3)
         self.assertEqual(data["causal_claim"], "not_established_by_two_runs")
+        self.assertEqual(sum(data["baseline_a"]["frame_time_bucket_counts"]), data["baseline_a"]["sample_count"])
+        self.assertEqual(sum(data["variant_b"]["frame_time_bucket_counts"]), data["variant_b"]["sample_count"])
+        forbidden_keys = {"path", "source_path", "config_path", "backup_path", "hostname", "username", "user"}
+        def walk_keys(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    yield key.casefold()
+                    yield from walk_keys(value)
+            elif isinstance(node, list):
+                for value in node:
+                    yield from walk_keys(value)
+        self.assertFalse(forbidden_keys.intersection(walk_keys(data)))
+
+    def test_benchmark_csv_and_json_exports_agree_on_aggregate_metrics(self):
+        before = analyze_frame_times("baseline.csv", [8.0, 10.0, 16.0, 40.0, 120.0])
+        after = analyze_frame_times("variant.csv", [9.0, 11.0, 17.0, 50.0, 150.0])
+        json_data = json.loads(export_comparison_json(before, after))
+        csv_rows = list(csv.DictReader(io.StringIO(export_comparison_csv(before, after))))
+        by_metric = {row["metric"]: row for row in csv_rows}
+        for side, key in (("baseline_a", "baseline_a"), ("variant_b", "variant_b")):
+            run = json_data[key]
+            prefix = "baseline_a" if side == "baseline_a" else "variant_b"
+            self.assertEqual(int(by_metric["sample_count"][prefix]), run["sample_count"])
+            for metric in ("average_fps", "one_percent_low_fps", "median_frame_time_ms", "p99_frame_time_ms", "min_frame_time_ms", "max_frame_time_ms"):
+                self.assertAlmostEqual(float(by_metric[metric][prefix]), run[metric])
+            for index, count in enumerate(run["frame_time_bucket_counts"]):
+                self.assertEqual(int(by_metric[f"frame_time_bucket_{index}"][prefix]), count)
+                self.assertAlmostEqual(float(by_metric[f"frame_time_bucket_{index}_share"][prefix]), count / run["sample_count"])
 
     def test_benchmark_history_roundtrip_omits_source_paths_and_raw_samples(self):
         path = Path(self.temp.name) / "benchmarks.json"

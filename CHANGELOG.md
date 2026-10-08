@@ -5,6 +5,7 @@
 - Export aggregate-only A/B benchmark comparisons as CSV or versioned JSON.
 - Exports omit source filenames, paths, source CSV content, and raw frame samples.
 - Include frame-time bucket counts/shares and explicitly label two-run results as non-causal.
+- Show exact source filenames only in the on-screen comparison, not in exported reports.
 
 ## 0.4.0 - 2026-10-09
 
