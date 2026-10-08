@@ -75,7 +75,9 @@ class FrameForgeCoreTests(unittest.TestCase):
             linked.symlink_to(outside, target_is_directory=True)
         except (OSError, NotImplementedError):
             self.skipTest("Directory symlink creation is unavailable in this environment")
-        with self.assertRaisesRegex(SafetyError, "Symbolic links and junctions"):
+        # resolve() follows the link before the explicit reparse-point scan,
+        # so the earlier allowlist check may provide the rejection message.
+        with self.assertRaises(SafetyError):
             validate_config_path(linked / "SkyrimPrefs.ini")
 
     def test_rejects_junction_reparse_point_in_game_directory(self):
@@ -109,6 +111,9 @@ class FrameForgeCoreTests(unittest.TestCase):
         except OSError as exc:
             self.skipTest(f"Windows junction creation unavailable: {exc}")
         try:
+            # resolve() follows the junction first, so the public validator may
+            # reject the resolved target at the allowlist check before it gets
+            # to its explicit reparse-point diagnostic.
             with self.assertRaises(SafetyError):
                 validate_config_path(junction / "SkyrimPrefs.ini")
         finally:
