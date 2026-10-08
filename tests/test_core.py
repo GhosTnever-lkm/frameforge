@@ -1,4 +1,5 @@
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,7 +7,10 @@ from unittest.mock import patch
 
 from frameforge.core.apply import apply_grass_distance, apply_profile_setting, build_profile_bytes, build_tuned_bytes, make_diff, read_grass_distance, read_profile_setting
 from frameforge.core.backup import create_byte_backup, restore_from_backup
-from frameforge.core.benchmark import FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks, load_frame_time_csv
+from frameforge.core.benchmark import (
+    FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks,
+    export_comparison_csv, export_comparison_json, load_frame_time_csv,
+)
 from frameforge.core.benchmark_store import BenchmarkStore, MAX_HISTORY, SCHEMA_VERSION
 from frameforge.core.safety import SafetyError, validate_config_path
 from frameforge.core.scanner import parse_libraryfolders
@@ -180,6 +184,25 @@ class FrameForgeCoreTests(unittest.TestCase):
         after = analyze_frame_times("variant.csv", [10.0] * 96)
         report = compare_benchmarks(before, after)
         self.assertNotIn("отличается более чем на 5%", report)
+
+    def test_benchmark_export_contains_aggregates_without_names_or_raw_frames(self):
+        before = analyze_frame_times("C:\\private\\before.csv", [10.0, 11.0, 12.0])
+        after = analyze_frame_times("D:\\secret\\after.csv", [9.0, 10.0, 120.0])
+        csv_export = export_comparison_csv(before, after)
+        json_export = export_comparison_json(before, after)
+        for export in (csv_export, json_export):
+            self.assertNotIn("before.csv", export)
+            self.assertNotIn("after.csv", export)
+            self.assertNotIn("C:\\private", export)
+            self.assertNotIn("D:\\secret", export)
+            self.assertNotIn("\nframe_time_ms\n", export)
+        self.assertIn("average_fps", csv_export)
+        self.assertIn("frame_time_bucket_5_share", csv_export)
+        data = json.loads(json_export)
+        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["baseline_a"]["frame_time_bucket_counts"], list(before.frame_time_buckets))
+        self.assertEqual(data["variant_b"]["sample_count"], 3)
+        self.assertEqual(data["causal_claim"], "not_established_by_two_runs")
 
     def test_benchmark_history_roundtrip_omits_source_paths_and_raw_samples(self):
         path = Path(self.temp.name) / "benchmarks.json"

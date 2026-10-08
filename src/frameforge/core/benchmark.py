@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import math
+import json
 from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,3 +120,62 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
         f"Разница p99 frametime: {p99_delta:+.2f} ms ({'хуже' if p99_delta > 0 else 'лучше' if p99_delta < 0 else 'без изменений'})\n\n"
         "Разница между прогонами сама по себе не доказывает причину. Повтори оба варианта в одинаковой сцене, разрешении, пресете и условиях; при малом числе кадров результат менее устойчив."
     )
+
+
+def export_comparison_csv(before: Benchmark, after: Benchmark) -> str:
+    """Export aggregate-only comparison rows; never include file paths or raw frames."""
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(("metric", "baseline_a", "variant_b", "delta_b_minus_a", "unit"))
+    rows = (
+        ("sample_count", before.sample_count, after.sample_count, after.sample_count - before.sample_count, "frames"),
+        ("average_fps", before.average_fps, after.average_fps, after.average_fps - before.average_fps, "fps"),
+        ("one_percent_low_fps", before.one_percent_low_fps, after.one_percent_low_fps, after.one_percent_low_fps - before.one_percent_low_fps, "fps"),
+        ("median_frame_time_ms", before.median_frame_time_ms, after.median_frame_time_ms, after.median_frame_time_ms - before.median_frame_time_ms, "ms"),
+        ("p99_frame_time_ms", before.p99_frame_time_ms, after.p99_frame_time_ms, after.p99_frame_time_ms - before.p99_frame_time_ms, "ms"),
+        ("min_frame_time_ms", before.min_frame_time_ms, after.min_frame_time_ms, after.min_frame_time_ms - before.min_frame_time_ms, "ms"),
+        ("max_frame_time_ms", before.max_frame_time_ms, after.max_frame_time_ms, after.max_frame_time_ms - before.max_frame_time_ms, "ms"),
+    )
+    writer.writerows(rows)
+    for index, (a_count, b_count) in enumerate(zip(before.frame_time_buckets, after.frame_time_buckets)):
+        a_share = a_count / before.sample_count
+        b_share = b_count / after.sample_count
+        writer.writerow((f"frame_time_bucket_{index}", a_count, b_count, b_count - a_count, "frames"))
+        writer.writerow((f"frame_time_bucket_{index}_share", a_share, b_share, b_share - a_share, "fraction"))
+    writer.writerow(("sample_count_delta_ratio", "", "", abs(before.sample_count - after.sample_count) / max(before.sample_count, after.sample_count), "fraction"))
+    writer.writerow(("causal_claim", "", "", "not_established_by_two_runs", "note"))
+    return output.getvalue()
+
+
+def export_comparison_json(before: Benchmark, after: Benchmark) -> str:
+    """Export machine-readable aggregate comparison without source names or paths."""
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "baseline_a": {
+                "sample_count": before.sample_count,
+                "average_fps": before.average_fps,
+                "one_percent_low_fps": before.one_percent_low_fps,
+                "median_frame_time_ms": before.median_frame_time_ms,
+                "p99_frame_time_ms": before.p99_frame_time_ms,
+                "min_frame_time_ms": before.min_frame_time_ms,
+                "max_frame_time_ms": before.max_frame_time_ms,
+                "frame_time_bucket_counts": list(before.frame_time_buckets),
+            },
+            "variant_b": {
+                "sample_count": after.sample_count,
+                "average_fps": after.average_fps,
+                "one_percent_low_fps": after.one_percent_low_fps,
+                "median_frame_time_ms": after.median_frame_time_ms,
+                "p99_frame_time_ms": after.p99_frame_time_ms,
+                "min_frame_time_ms": after.min_frame_time_ms,
+                "max_frame_time_ms": after.max_frame_time_ms,
+                "frame_time_bucket_counts": list(after.frame_time_buckets),
+            },
+            "sample_count_delta_ratio": abs(before.sample_count - after.sample_count) / max(before.sample_count, after.sample_count),
+            "causal_claim": "not_established_by_two_runs",
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        indent=2,
+    ) + "\n"

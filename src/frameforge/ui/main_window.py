@@ -16,7 +16,10 @@ from PySide6.QtWidgets import (
 
 from ..catalog import GUIDE, GUIDE_GAMES, GUIDES, GAMES
 from ..core.apply import apply_profile_setting, build_profile_bytes, make_diff, read_profile_setting
-from ..core.benchmark import Benchmark, compare_benchmarks, load_frame_time_csv
+from ..core.benchmark import (
+    Benchmark, compare_benchmarks, export_comparison_csv,
+    export_comparison_json, load_frame_time_csv,
+)
 from ..core.benchmark_store import BenchmarkStore
 from ..core.backup import restore_from_backup, sha256
 from ..core.config_finder import find_skyrim_config
@@ -86,7 +89,7 @@ class MainWindow(QMainWindow):
         safety = QLabel("ЛОКАЛЬНО\nТолько выбранные изменения\nБез античит-твиков")
         safety.setObjectName("safety")
         side.addWidget(safety)
-        version = QLabel("v0.4.0 · MIT")
+        version = QLabel("v0.5.0 · MIT")
         version.setObjectName("muted")
         side.addWidget(version)
 
@@ -351,6 +354,10 @@ class MainWindow(QMainWindow):
         compare_button.clicked.connect(self.compare_benchmark_selection)
         compare_row.addWidget(compare_button)
         layout.addLayout(compare_row)
+        self.export_benchmark_button = QPushButton("Экспортировать сводку…")
+        self.export_benchmark_button.clicked.connect(self.export_benchmark_selection)
+        self.export_benchmark_button.setEnabled(False)
+        layout.addWidget(self.export_benchmark_button)
         self._refresh_benchmark_history()
         self.benchmark_report = QTextEdit()
         self.benchmark_report.setReadOnly(True)
@@ -412,13 +419,54 @@ class MainWindow(QMainWindow):
             self.benchmark_after.setCurrentIndex(previous_after if isinstance(previous_after, int) and previous_after < len(self.benchmark_runs) else len(self.benchmark_runs) - 1)
 
     def compare_benchmark_selection(self):
-        if self.benchmark_before.count() < 2:
-            QMessageBox.information(self, "Нужны два замера", "Импортируй CSV до и после изменения настроек.")
+        selection = self._selected_benchmark_pair()
+        if selection is None:
             return
-        before = self.benchmark_runs[self.benchmark_before.currentData()]
-        after = self.benchmark_runs[self.benchmark_after.currentData()]
+        before, after = selection
         self.benchmark_report.setPlainText(compare_benchmarks(before, after))
         self.benchmark_chart.set_runs(before, after)
+        self.export_benchmark_button.setEnabled(True)
+
+    def _selected_benchmark_pair(self) -> tuple[Benchmark, Benchmark] | None:
+        if self.benchmark_before.count() < 2:
+            QMessageBox.information(self, "Нужны два замера", "Импортируй два CSV-файла для сравнения.")
+            return None
+        before_index = self.benchmark_before.currentData()
+        after_index = self.benchmark_after.currentData()
+        if before_index == after_index:
+            QMessageBox.information(self, "Выбраны одинаковые замеры", "Для сравнения выбери два разных результата.")
+            return None
+        return self.benchmark_runs[before_index], self.benchmark_runs[after_index]
+
+    def export_benchmark_selection(self):
+        selection = self._selected_benchmark_pair()
+        if selection is None:
+            return
+        before, after = selection
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт сводки сравнения",
+            "FrameForge-comparison.csv",
+            "CSV summary (*.csv);;JSON summary (*.json)",
+        )
+        if not path:
+            return
+        target = Path(path)
+        want_json = "JSON" in selected_filter or target.suffix.casefold() == ".json"
+        expected_suffix = ".json" if want_json else ".csv"
+        if target.suffix.casefold() != expected_suffix:
+            target = target.with_suffix(expected_suffix)
+        try:
+            payload = export_comparison_json(before, after) if want_json else export_comparison_csv(before, after)
+            target.write_text(payload, encoding="utf-8-sig" if not want_json else "utf-8", newline="")
+        except OSError as exc:
+            QMessageBox.critical(self, "Не удалось экспортировать", f"Сводка не сохранена.\n{exc}")
+            return
+        QMessageBox.information(
+            self,
+            "Сводка экспортирована",
+            f"Сохранён агрегированный отчёт:\n{target}\n\nВ нём нет исходных путей и кадров CSV.",
+        )
 
     def _backups_page(self):
         scroll, layout = self._scroll_page()

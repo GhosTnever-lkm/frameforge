@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 - 2026-10-09
+
+- Export aggregate-only A/B benchmark comparisons as CSV or versioned JSON.
+- Exports omit source filenames, paths, source CSV content, and raw frame samples.
+- Include frame-time bucket counts/shares and explicitly label two-run results as non-causal.
+
 ## 0.4.0 - 2026-10-09
 
 - Improve benchmark comparisons with per-bucket normalized shares and percentage-point deltas in the text report.
