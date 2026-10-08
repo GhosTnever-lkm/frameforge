@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from ..catalog import GUIDE, GUIDE_GAMES, GUIDES, GAMES
 from ..core.apply import apply_profile_setting, build_profile_bytes, make_diff, read_profile_setting
 from ..core.benchmark import Benchmark, compare_benchmarks, load_frame_time_csv
+from ..core.benchmark_store import BenchmarkStore
 from ..core.backup import restore_from_backup, sha256
 from ..core.config_finder import find_skyrim_config
 from ..core.profiles import TUNING_PROFILES
@@ -85,7 +86,7 @@ class MainWindow(QMainWindow):
         safety = QLabel("ЛОКАЛЬНО\nТолько выбранные изменения\nБез античит-твиков")
         safety.setObjectName("safety")
         side.addWidget(safety)
-        version = QLabel("v0.2.0 · MIT")
+        version = QLabel("v0.3.0 · MIT")
         version.setObjectName("muted")
         side.addWidget(version)
 
@@ -323,7 +324,16 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True)
         note.setObjectName("muted")
         layout.addWidget(note)
-        self.benchmark_runs: list[Benchmark] = []
+        privacy_note = QLabel("История хранится на этом компьютере в %LOCALAPPDATA%\\FrameForge\\benchmarks.json. Сохраняются только имя CSV и сводные метрики; исходный CSV и его путь не сохраняются.")
+        privacy_note.setObjectName("muted")
+        privacy_note.setWordWrap(True)
+        layout.addWidget(privacy_note)
+        self.benchmark_store = BenchmarkStore(app_data_dir() / "benchmarks.json")
+        try:
+            self.benchmark_runs: list[Benchmark] = self.benchmark_store.load()
+        except (OSError, ValueError) as exc:
+            self.benchmark_runs = []
+            QMessageBox.warning(self, "История замеров недоступна", f"Создана пустая история в памяти приложения. Исходный файл не изменён.\n{exc}")
         self.benchmark_list = QListWidget()
         layout.addWidget(self.benchmark_list)
         import_button = QPushButton("Импортировать CSV замера")
@@ -341,6 +351,7 @@ class MainWindow(QMainWindow):
         compare_button.clicked.connect(self.compare_benchmark_selection)
         compare_row.addWidget(compare_button)
         layout.addLayout(compare_row)
+        self._refresh_benchmark_history()
         self.benchmark_report = QTextEdit()
         self.benchmark_report.setReadOnly(True)
         self.benchmark_report.setPlaceholderText("Импортируй два CSV, чтобы сравнить результаты.")
@@ -370,13 +381,35 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "CSV не загружен", str(exc))
             return
         self.benchmark_runs.append(run)
-        self.benchmark_list.addItem(f"{run.name} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
-        for selector in (self.benchmark_before, self.benchmark_after):
-            selector.addItem(run.name, len(self.benchmark_runs) - 1)
+        try:
+            self.benchmark_store.save(self.benchmark_runs)
+        except (OSError, ValueError) as exc:
+            self.benchmark_runs.pop()
+            QMessageBox.critical(self, "Замер не сохранён", f"Новый результат не добавлен в историю. Предыдущая история сохранена.\n{exc}")
+            return
+        self._refresh_benchmark_history()
         if len(self.benchmark_runs) >= 2:
             self.benchmark_before.setCurrentIndex(len(self.benchmark_runs) - 2)
             self.benchmark_after.setCurrentIndex(len(self.benchmark_runs) - 1)
             self.compare_benchmark_selection()
+
+    def _refresh_benchmark_history(self):
+        self.benchmark_list.clear()
+        for run in self.benchmark_runs:
+            self.benchmark_list.addItem(f"{run.name} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
+        if not hasattr(self, "benchmark_before"):
+            return
+        previous_before = self.benchmark_before.currentData()
+        previous_after = self.benchmark_after.currentData()
+        for selector in (self.benchmark_before, self.benchmark_after):
+            selector.blockSignals(True)
+            selector.clear()
+            for index, run in enumerate(self.benchmark_runs):
+                selector.addItem(run.name, index)
+            selector.blockSignals(False)
+        if self.benchmark_runs:
+            self.benchmark_before.setCurrentIndex(previous_before if isinstance(previous_before, int) and previous_before < len(self.benchmark_runs) else 0)
+            self.benchmark_after.setCurrentIndex(previous_after if isinstance(previous_after, int) and previous_after < len(self.benchmark_runs) else len(self.benchmark_runs) - 1)
 
     def compare_benchmark_selection(self):
         if self.benchmark_before.count() < 2:

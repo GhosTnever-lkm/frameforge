@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 - 2026-10-09
+
+- Persist up to 100 benchmark summaries locally across application restarts.
+- Store only the source file name and aggregate frame-time metrics; never retain source CSV files, raw samples, or absolute source paths.
+- Validate the versioned history format and write it atomically with size and field checks.
+
 ## 0.2.0 - 2026-10-09
 
 - Add a second reversible Skyrim profile for grass density in `Skyrim.ini`, including a deliberate grass-off preset (`iMinGrassSize=0`).

@@ -7,6 +7,7 @@ from unittest.mock import patch
 from frameforge.core.apply import apply_grass_distance, apply_profile_setting, build_profile_bytes, build_tuned_bytes, make_diff, read_grass_distance, read_profile_setting
 from frameforge.core.backup import create_byte_backup, restore_from_backup
 from frameforge.core.benchmark import FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks, load_frame_time_csv
+from frameforge.core.benchmark_store import BenchmarkStore, MAX_HISTORY, SCHEMA_VERSION
 from frameforge.core.safety import SafetyError, validate_config_path
 from frameforge.core.scanner import parse_libraryfolders
 
@@ -163,6 +164,73 @@ class FrameForgeCoreTests(unittest.TestCase):
         report = compare_benchmarks(before, after)
         self.assertIn("+50.0 (+100.0%)", report)
         self.assertIn("одинаковой сцене", report)
+
+    def test_benchmark_history_roundtrip_omits_source_paths_and_raw_samples(self):
+        path = Path(self.temp.name) / "benchmarks.json"
+        store = BenchmarkStore(path)
+        run = analyze_frame_times("benchmark.csv", [10, 15, 25])
+        store.save([run])
+        raw = path.read_text(encoding="utf-8")
+        self.assertNotIn(str(self.temp.name), raw)
+        self.assertNotIn("frame_times", raw)
+        self.assertEqual(store.load(), [run])
+
+    def test_benchmark_history_rejects_corruption_and_inconsistent_buckets(self):
+        path = Path(self.temp.name) / "benchmarks.json"
+        store = BenchmarkStore(path)
+        path.write_text("not json", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "прочитать"):
+            store.load()
+        run = analyze_frame_times("benchmark.csv", [10, 15, 25])
+        store.save([run])
+        data = __import__("json").loads(path.read_text(encoding="utf-8"))
+        data["runs"][0]["frame_time_buckets"][0] += 1
+        path.write_text(__import__("json").dumps(data), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Сумма диапазонов"):
+            store.load()
+
+    def test_benchmark_history_rejects_unknown_schema_and_large_file(self):
+        path = Path(self.temp.name) / "benchmarks.json"
+        store = BenchmarkStore(path)
+        path.write_text('{"schema_version":99,"runs":[]}', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "не поддерживается"):
+            store.load()
+        with patch("frameforge.core.benchmark_store.MAX_STORE_BYTES", 8):
+            with self.assertRaisesRegex(ValueError, "2 МБ"):
+                store.load()
+
+    def test_benchmark_history_rejects_path_like_source_names(self):
+        path = Path(self.temp.name) / "benchmarks.json"
+        store = BenchmarkStore(path)
+        run = analyze_frame_times("safe.csv", [10])
+        store.save([run])
+        data = __import__("json").loads(path.read_text(encoding="utf-8"))
+        data["runs"][0]["name"] = "C:\\Users\\secret\\private.csv"
+        path.write_text(__import__("json").dumps(data), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Имя замера"):
+            store.load()
+
+    def test_benchmark_history_write_is_atomic_and_keeps_previous_file(self):
+        path = Path(self.temp.name) / "benchmarks.json"
+        store = BenchmarkStore(path)
+        before = analyze_frame_times("before.csv", [10, 11])
+        after = analyze_frame_times("after.csv", [9, 10])
+        store.save([before])
+        original = path.read_bytes()
+        with patch("frameforge.core.benchmark_store.os.replace", side_effect=OSError("simulated")):
+            with self.assertRaises(OSError):
+                store.save([before, after])
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_benchmark_history_is_bounded_to_newest_hundred(self):
+        path = Path(self.temp.name) / "benchmarks.json"
+        store = BenchmarkStore(path)
+        runs = [analyze_frame_times(f"run-{index}.csv", [10]) for index in range(MAX_HISTORY + 3)]
+        store.save(runs)
+        loaded = store.load()
+        self.assertEqual(len(loaded), MAX_HISTORY)
+        self.assertEqual(loaded[0].name, "run-3.csv")
+        self.assertEqual(loaded[-1].name, "run-102.csv")
 
     def test_refuses_stale_preview_without_modifying_config(self):
         preview_source = self.config.read_bytes()
