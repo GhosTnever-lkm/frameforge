@@ -1,0 +1,46 @@
+name: Quality and Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  quality:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[build]"
+      - run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q src tests
+      - run: python -m PyInstaller --noconfirm --clean --windowed --name FrameForge run_frameforge.py
+      - shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          Copy-Item README.md, LICENSE -Destination dist/FrameForge
+          $archive = "dist/FrameForge-$version-windows-x64.zip"
+          Compress-Archive -Path dist/FrameForge -DestinationPath $archive -CompressionLevel Optimal
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content "$archive.sha256" "$hash  $(Split-Path -Leaf $archive)" -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameForge-windows
+          path: |
+            dist/FrameForge-*.zip
+            dist/FrameForge-*.zip.sha256
+          if-no-files-found: error
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/FrameForge-*.zip
+            dist/FrameForge-*.zip.sha256
