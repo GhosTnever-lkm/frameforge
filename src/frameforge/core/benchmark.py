@@ -3,12 +3,14 @@ from __future__ import annotations
 import csv
 import io
 import math
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 
 MAX_CSV_BYTES = 64 * 1024 * 1024
 MAX_SAMPLES = 5_000_000
 FRAME_TIME_COLUMN = "frame_time_ms"
+FRAME_TIME_BUCKET_EDGES_MS = (8.33, 16.67, 33.33, 50.0, 100.0)
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,7 @@ class Benchmark:
     median_frame_time_ms: float
     min_frame_time_ms: float
     max_frame_time_ms: float
+    frame_time_buckets: tuple[int, ...]
 
 
 def _nearest_rank(values: list[float], percentile: float) -> float:
@@ -35,6 +38,9 @@ def analyze_frame_times(name: str, frame_times_ms: list[float]) -> Benchmark:
     if any(not math.isfinite(value) or value <= 0 or value > 10_000 for value in frame_times_ms):
         raise ValueError("Frame times must be finite values from 0 to 10,000 ms.")
     ordered = sorted(frame_times_ms)
+    buckets = [0] * (len(FRAME_TIME_BUCKET_EDGES_MS) + 1)
+    for value in ordered:
+        buckets[bisect_right(FRAME_TIME_BUCKET_EDGES_MS, value)] += 1
     slow_count = max(1, math.ceil(len(ordered) * 0.01))
     slow_average = sum(ordered[-slow_count:]) / slow_count
     mean = sum(ordered) / len(ordered)
@@ -47,6 +53,7 @@ def analyze_frame_times(name: str, frame_times_ms: list[float]) -> Benchmark:
         median_frame_time_ms=_nearest_rank(ordered, 0.5),
         min_frame_time_ms=ordered[0],
         max_frame_time_ms=ordered[-1],
+        frame_time_buckets=tuple(buckets),
     )
 
 

@@ -139,6 +139,11 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertEqual(run.one_percent_low_fps, 20)
         self.assertEqual(run.p99_frame_time_ms, 10)
 
+    def test_benchmark_exposes_frame_time_distribution_buckets(self):
+        run = analyze_frame_times("distribution", [4, 8.33, 16.67, 33.33, 50, 100])
+        self.assertEqual(run.frame_time_buckets, (1, 1, 1, 1, 1, 1))
+        self.assertEqual(sum(run.frame_time_buckets), run.sample_count)
+
     def test_benchmark_rejects_wrong_header_and_invalid_values(self):
         path = Path(self.temp.name) / "bad.csv"
         path.write_text("fps\n60\n", encoding="utf-8")

@@ -22,6 +22,7 @@ from ..core.config_finder import find_skyrim_config
 from ..core.profiles import TUNING_PROFILES
 from ..core.safety import SafetyError
 from ..core.scanner import detect_skyrim_installs, system_snapshot
+from .benchmark_chart import FrameTimeChart
 
 
 BG = "#0b1020"
@@ -345,6 +346,11 @@ class MainWindow(QMainWindow):
         self.benchmark_report.setPlaceholderText("Импортируй два CSV, чтобы сравнить результаты.")
         self.benchmark_report.setMinimumHeight(200)
         layout.addWidget(self.benchmark_report)
+        chart_title = QLabel("Распределение времени кадров · миллисекунды")
+        chart_title.setObjectName("tagline")
+        layout.addWidget(chart_title)
+        self.benchmark_chart = FrameTimeChart()
+        layout.addWidget(self.benchmark_chart)
         sample = QLabel("Формат CSV: frame_time_ms\n16.6\n16.4\n17.2")
         sample.setObjectName("muted")
         layout.addWidget(sample)
@@ -375,6 +381,7 @@ class MainWindow(QMainWindow):
         before = self.benchmark_runs[self.benchmark_before.currentData()]
         after = self.benchmark_runs[self.benchmark_after.currentData()]
         self.benchmark_report.setPlainText(compare_benchmarks(before, after))
+        self.benchmark_chart.set_runs(before, after)
 
     def _backups_page(self):
         scroll, layout = self._scroll_page()
