@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -60,8 +61,14 @@ def create_byte_backup(config: Path, backup_dir: Path) -> Path:
     return backup
 
 
-def atomic_replace(path: Path, data: bytes) -> None:
-    import shutil
+def atomic_replace(path: Path, data: bytes, expected_current_sha256: str | None = None) -> None:
+    """Replace an already validated Skyrim INI path with prepared bytes.
+
+    The current allowlist is exactly Documents/My Games/Skyrim Special
+    Edition/<INI>, so parents[2] is the Documents anchor used for the final
+    revalidation below. The hash and path checks are sequential, not atomic
+    with os.replace; concurrent edits after the hash check can still be lost.
+    """
     import tempfile
 
     fd, temporary = tempfile.mkstemp(prefix=".frameforge-", suffix=".tmp", dir=path.parent)
@@ -71,8 +78,20 @@ def atomic_replace(path: Path, data: bytes) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         shutil.copystat(path, temporary, follow_symlinks=False)
+        if expected_current_sha256 is not None:
+            current_hash = sha256(path.read_bytes())
+            if current_hash.casefold() != expected_current_sha256.casefold():
+                raise SafetyError(
+                    "The current config changed before it could be replaced. "
+                    "No changes were written; review the file and scan it again."
+                )
+        # Recheck the supported lexical path immediately before replacing it.
+        # This narrows, but cannot eliminate, a concurrent directory-swap race.
+        validated = validate_config_path(path, documents_root=path.parents[2])
+        if validated != path:
+            raise SafetyError("The config path changed during the operation; no replacement was written.")
         os.replace(temporary, path)
-    except Exception:
+    except BaseException:
         try:
             os.unlink(temporary)
         except OSError:
@@ -80,7 +99,12 @@ def atomic_replace(path: Path, data: bytes) -> None:
         raise
 
 
-def restore_from_backup(backup: Path, target: Path, expected_sha256: str | None = None) -> str:
+def restore_from_backup(
+    backup: Path,
+    target: Path,
+    expected_sha256: str | None = None,
+    expected_current_sha256: str | None = None,
+) -> str:
     safe = validate_config_path(target)
     backup = Path(backup).expanduser()
     if backup.parent.name.casefold() != "backups":
@@ -98,5 +122,5 @@ def restore_from_backup(backup: Path, target: Path, expected_sha256: str | None 
         raise SafetyError("The backup no longer matches its saved SHA-256; restore was stopped.")
     from .apply import validate_ini_payload
     validate_ini_payload(payload, safe.name)
-    atomic_replace(safe, payload)
+    atomic_replace(safe, payload, expected_current_sha256=expected_current_sha256)
     return actual_sha256

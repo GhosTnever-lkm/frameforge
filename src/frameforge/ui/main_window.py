@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self.last_backup: Path | None = None
         self.backup_config: Path | None = None
         self.last_backup_sha256: str | None = None
+        self.last_current_sha256: str | None = None
         self._build()
         self._style()
         self.show_page(0)
@@ -89,7 +90,7 @@ class MainWindow(QMainWindow):
         safety = QLabel("ЛОКАЛЬНО\nТолько выбранные изменения\nБез античит-твиков")
         safety.setObjectName("safety")
         side.addWidget(safety)
-        version = QLabel("v0.5.0 · MIT")
+        version = QLabel("v0.6.0 · MIT")
         version.setObjectName("muted")
         side.addWidget(version)
 
@@ -327,10 +328,23 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True)
         note.setObjectName("muted")
         layout.addWidget(note)
-        privacy_note = QLabel("История хранится на этом компьютере в %LOCALAPPDATA%\\FrameForge\\benchmarks.json. Сохраняются только имя CSV и сводные метрики; исходный CSV и его путь не сохраняются.")
+        privacy_note = QLabel("История хранится на этом компьютере в %LOCALAPPDATA%\\FrameForge\\benchmarks.json. Сохраняются имя CSV, игра/сцена и сводные метрики; исходный CSV и его путь не сохраняются. Метки не включаются в экспорт.")
         privacy_note.setObjectName("muted")
         privacy_note.setWordWrap(True)
         layout.addWidget(privacy_note)
+        run_label = QLabel("Метки замера (не обязательны, только для локальной истории)")
+        run_label.setObjectName("tagline")
+        layout.addWidget(run_label)
+        self.benchmark_game = QComboBox()
+        self.benchmark_game.addItem("Игра не указана", "")
+        supported_games = dict.fromkeys([game["name"] for game in GAMES] + GUIDE_GAMES)
+        for game_name in supported_games:
+            self.benchmark_game.addItem(game_name, game_name)
+        layout.addWidget(self.benchmark_game)
+        self.benchmark_scene = QLineEdit()
+        self.benchmark_scene.setPlaceholderText("Сцена / карта / пресет; не вводи личные пути (до 120 символов)")
+        self.benchmark_scene.setMaxLength(120)
+        layout.addWidget(self.benchmark_scene)
         self.benchmark_store = BenchmarkStore(app_data_dir() / "benchmarks.json")
         try:
             self.benchmark_runs: list[Benchmark] = self.benchmark_store.load()
@@ -384,6 +398,19 @@ class MainWindow(QMainWindow):
             return
         try:
             run = load_frame_time_csv(Path(path))
+            run = Benchmark(
+                name=run.name,
+                game=self.benchmark_game.currentData() or "",
+                scene=self.benchmark_scene.text().strip(),
+                sample_count=run.sample_count,
+                average_fps=run.average_fps,
+                one_percent_low_fps=run.one_percent_low_fps,
+                p99_frame_time_ms=run.p99_frame_time_ms,
+                median_frame_time_ms=run.median_frame_time_ms,
+                min_frame_time_ms=run.min_frame_time_ms,
+                max_frame_time_ms=run.max_frame_time_ms,
+                frame_time_buckets=run.frame_time_buckets,
+            )
         except (OSError, UnicodeError, ValueError, csv.Error) as exc:
             QMessageBox.warning(self, "CSV не загружен", str(exc))
             return
@@ -403,7 +430,8 @@ class MainWindow(QMainWindow):
     def _refresh_benchmark_history(self):
         self.benchmark_list.clear()
         for run in self.benchmark_runs:
-            self.benchmark_list.addItem(f"{run.name} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
+            label = " · ".join(part for part in (run.game or "Игра не указана", run.scene or "сцена не указана") if part)
+            self.benchmark_list.addItem(f"{run.name} · {label} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
         if not hasattr(self, "benchmark_before"):
             return
         previous_before = self.benchmark_before.currentData()
@@ -412,7 +440,8 @@ class MainWindow(QMainWindow):
             selector.blockSignals(True)
             selector.clear()
             for index, run in enumerate(self.benchmark_runs):
-                selector.addItem(run.name, index)
+                label = " · ".join(part for part in (run.name, run.game or "Игра не указана", run.scene or "") if part)
+                selector.addItem(label, index)
             selector.blockSignals(False)
         if self.benchmark_runs:
             self.benchmark_before.setCurrentIndex(previous_before if isinstance(previous_before, int) and previous_before < len(self.benchmark_runs) else 0)
@@ -567,12 +596,42 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
-            backup, _ = apply_profile_setting(self.config_path, target, app_data_dir() / "backups", expected_original=self.original)
+            backup, applied_sha256 = apply_profile_setting(self.config_path, target, app_data_dir() / "backups", expected_original=self.original)
             rows = self._read_index()
             backup_hash = sha256(backup.read_bytes())
-            rows.insert(0, {"backup": str(backup), "config": str(self.config_path), "sha256": backup_hash, "created": datetime.now().isoformat(timespec="seconds")})
-            self._write_index(rows)
-            self.last_backup, self.backup_config, self.last_backup_sha256 = backup, self.config_path, backup_hash
+            rows.insert(0, {
+                "backup": str(backup),
+                "config": str(self.config_path),
+                "sha256": backup_hash,
+                "expected_current_sha256": applied_sha256,
+                "created": datetime.now().isoformat(timespec="seconds"),
+            })
+            try:
+                self._write_index(rows)
+            except (OSError, TypeError, ValueError) as index_error:
+                try:
+                    restore_from_backup(
+                        backup,
+                        self.config_path,
+                        expected_sha256=backup_hash,
+                        expected_current_sha256=applied_sha256,
+                    )
+                except (SafetyError, OSError, ValueError) as restore_error:
+                    QMessageBox.critical(
+                        self,
+                        "Настройка применена, журнал не сохранён",
+                        f"Не удалось сохранить список backup и автоматически восстановить исходный INI. "
+                        f"Проверь файл и сохранившуюся копию вручную:\n{backup}\n\n{index_error}\n{restore_error}",
+                    )
+                else:
+                    QMessageBox.critical(
+                        self,
+                        "Настройка отменена",
+                        f"Журнал backup не удалось сохранить; исходный INI восстановлен.\n{index_error}",
+                    )
+                return
+            self.last_backup, self.backup_config = backup, self.config_path
+            self.last_backup_sha256, self.last_current_sha256 = backup_hash, applied_sha256
             self.refresh_backups()
             self.scan_preview()
             QMessageBox.information(self, "Профиль применён", f"Резервная копия проверена.\n{backup.name}")
@@ -593,7 +652,7 @@ class MainWindow(QMainWindow):
 
     def restore_last(self):
         if self.last_backup and self.backup_config == self.config_path and self.last_backup_sha256:
-            self._restore(self.last_backup, self.config_path, self.last_backup_sha256)
+            self._restore(self.last_backup, self.config_path, self.last_backup_sha256, self.last_current_sha256)
             return
         self.refresh_backups()
         if self.backup_list.count() == 0:
@@ -611,15 +670,53 @@ class MainWindow(QMainWindow):
         if not row.get("sha256"):
             QMessageBox.warning(self, "Нет контрольной суммы", "Эта запись не содержит SHA-256. Для защиты от повреждённой копии восстановление остановлено.")
             return
-        self._restore(Path(row["backup"]), Path(row["config"]), row["sha256"])
+        self._restore(Path(row["backup"]), Path(row["config"]), row["sha256"], row.get("expected_current_sha256"))
 
-    def _restore(self, backup: Path, config: Path, expected_sha256: str | None = None):
-        answer = QMessageBox.question(self, "Подтвердить откат", f"Текущий {config.name} будет заменён точной копией выбранного backup. Продолжить?")
+    def _restore(
+        self,
+        backup: Path,
+        config: Path,
+        expected_sha256: str | None = None,
+        expected_current_sha256: str | None = None,
+    ):
+        warning = ""
+        if expected_current_sha256 is None:
+            warning = "\n\nЭта копия создана старой версией FrameForge: сравнить файл с состоянием после применения нельзя. Если после настройки ты редактировал его вручную, эти изменения будут заменены."
+        answer = QMessageBox.question(
+            self,
+            "Подтвердить откат",
+            f"Текущий {config.name} будет заменён точной копией выбранного backup. Продолжить?{warning}",
+        )
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
-            restored_hash = restore_from_backup(backup, config, expected_sha256)
-            self.last_backup, self.backup_config, self.last_backup_sha256 = backup, config, restored_hash
+            restored_hash = restore_from_backup(
+                backup,
+                config,
+                expected_sha256,
+                expected_current_sha256=expected_current_sha256,
+            )
+            self.last_backup, self.backup_config = backup, config
+            self.last_backup_sha256 = expected_sha256
+            self.last_current_sha256 = restored_hash
+            rows = self._read_index()
+            backup_key = os.path.normcase(os.path.abspath(backup))
+            config_key = os.path.normcase(os.path.abspath(config))
+            for row in rows:
+                if (
+                    os.path.normcase(os.path.abspath(row.get("backup", ""))) == backup_key
+                    and os.path.normcase(os.path.abspath(row.get("config", ""))) == config_key
+                ):
+                    row["expected_current_sha256"] = restored_hash
+                    break
+            try:
+                self._write_index(rows)
+            except OSError as exc:
+                QMessageBox.warning(
+                    self,
+                    "Файл восстановлен, история не обновлена",
+                    f"INI восстановлен побайтово, но список backup не удалось обновить.\n{exc}",
+                )
             self.game_folder = config.parent
             profile_index = next((i for i, profile in enumerate(TUNING_PROFILES) if profile.config_name.casefold() == config.name.casefold()), 0)
             self.profile_select.setCurrentIndex(profile_index)

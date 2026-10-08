@@ -9,11 +9,12 @@ from pathlib import Path
 
 from .benchmark import Benchmark, FRAME_TIME_BUCKET_EDGES_MS, MAX_SAMPLES
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+LEGACY_SCHEMA_VERSION = 1
 MAX_HISTORY = 100
 MAX_STORE_BYTES = 2 * 1024 * 1024
 _FIELDS = {
-    "name", "sample_count", "average_fps", "one_percent_low_fps",
+    "name", "game", "scene", "sample_count", "average_fps", "one_percent_low_fps",
     "p99_frame_time_ms", "median_frame_time_ms", "min_frame_time_ms",
     "max_frame_time_ms", "frame_time_buckets",
 }
@@ -23,12 +24,16 @@ def _validate_benchmark(value: object) -> Benchmark:
     if not isinstance(value, dict) or set(value) != _FIELDS:
         raise ValueError("Запись истории имеет неверный набор полей.")
     name = value["name"]
+    game = value["game"]
+    scene = value["scene"]
     count = value["sample_count"]
     if not isinstance(name, str) or not name or len(name) > 255 or "/" in name or "\\" in name:
         raise ValueError("Имя замера в истории некорректно.")
+    if not isinstance(game, str) or len(game) > 100 or not isinstance(scene, str) or len(scene) > 120:
+        raise ValueError("Метки игры или сцены в истории некорректны.")
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_SAMPLES:
         raise ValueError("Количество кадров в истории некорректно.")
-    numeric_fields = _FIELDS - {"name", "sample_count", "frame_time_buckets"}
+    numeric_fields = _FIELDS - {"name", "game", "scene", "sample_count", "frame_time_buckets"}
     for field in numeric_fields:
         item = value[field]
         if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) or item <= 0:
@@ -50,6 +55,8 @@ def _validate_benchmark(value: object) -> Benchmark:
         raise ValueError("Перцентили времени кадров в истории некорректны.")
     return Benchmark(
         name=name,
+        game=game,
+        scene=scene,
         sample_count=count,
         average_fps=float(value["average_fps"]),
         one_percent_low_fps=float(value["one_percent_low_fps"]),
@@ -76,18 +83,35 @@ class BenchmarkStore:
             document = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise ValueError("Не удалось прочитать локальную историю бенчмарков.") from exc
-        if not isinstance(document, dict) or document.get("schema_version") != SCHEMA_VERSION or set(document) != {"schema_version", "runs"}:
+        if not isinstance(document, dict) or set(document) != {"schema_version", "runs"}:
+            raise ValueError("Версия или структура локальной истории бенчмарков не поддерживается.")
+        version = document["schema_version"]
+        if isinstance(version, bool) or not isinstance(version, int) or version not in (LEGACY_SCHEMA_VERSION, SCHEMA_VERSION):
             raise ValueError("Версия или структура локальной истории бенчмарков не поддерживается.")
         rows = document["runs"]
         if not isinstance(rows, list) or len(rows) > MAX_HISTORY:
             raise ValueError("Список локальных замеров некорректен.")
+        if version == LEGACY_SCHEMA_VERSION:
+            migrated = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError("Запись истории имеет неверный набор полей.")
+                migrated.append(_validate_benchmark({**row, "game": "", "scene": ""}))
+            return migrated
         return [_validate_benchmark(row) for row in rows]
 
     def save(self, runs: list[Benchmark]) -> None:
         clean = [_validate_benchmark(asdict(run) | {"frame_time_buckets": list(run.frame_time_buckets)}) for run in runs[-MAX_HISTORY:]]
+        has_labels = any(run.game or run.scene for run in clean)
+        stored_runs = [asdict(run) | {"frame_time_buckets": list(run.frame_time_buckets)} for run in clean]
+        version = SCHEMA_VERSION if has_labels else LEGACY_SCHEMA_VERSION
+        if not has_labels:
+            for run in stored_runs:
+                run.pop("game")
+                run.pop("scene")
         document = {
-            "schema_version": SCHEMA_VERSION,
-            "runs": [asdict(run) | {"frame_time_buckets": list(run.frame_time_buckets)} for run in clean],
+            "schema_version": version,
+            "runs": stored_runs,
         }
         payload = (json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2) + "\n").encode("utf-8")
         if len(payload) > MAX_STORE_BYTES:

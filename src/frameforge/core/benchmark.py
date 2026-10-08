@@ -31,13 +31,15 @@ class Benchmark:
     min_frame_time_ms: float
     max_frame_time_ms: float
     frame_time_buckets: tuple[int, ...]
+    game: str = ""
+    scene: str = ""
 
 
 def _nearest_rank(values: list[float], percentile: float) -> float:
     return values[max(0, math.ceil(percentile * len(values)) - 1)]
 
 
-def analyze_frame_times(name: str, frame_times_ms: list[float]) -> Benchmark:
+def analyze_frame_times(name: str, frame_times_ms: list[float], *, game: str = "", scene: str = "") -> Benchmark:
     if not frame_times_ms:
         raise ValueError("CSV must contain at least one frame time.")
     if len(frame_times_ms) > MAX_SAMPLES:
@@ -53,6 +55,8 @@ def analyze_frame_times(name: str, frame_times_ms: list[float]) -> Benchmark:
     mean = sum(ordered) / len(ordered)
     return Benchmark(
         name=name,
+        game=game,
+        scene=scene,
         sample_count=len(ordered),
         average_fps=1000 / mean,
         one_percent_low_fps=1000 / slow_average,
@@ -96,6 +100,11 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
     p99_delta = after.p99_frame_time_ms - before.p99_frame_time_ms
     sample_delta = abs(before.sample_count - after.sample_count) / max(before.sample_count, after.sample_count)
     sample_warning = "⚠ Число кадров отличается более чем на 5%; сравнение распределений менее надёжно.\n\n" if sample_delta > 0.05 else ""
+    context_warning = ""
+    if before.game != after.game or before.scene != after.scene:
+        context_warning = "⚠ Метки игры или сцены различаются; эти прогоны могут быть несопоставимы.\n\n"
+    elif not before.game or not before.scene:
+        context_warning = "ℹ Игра или сцена не указаны; FrameForge не может проверить сопоставимость условий.\n\n"
     bucket_rows = []
     for label, a_count, b_count in zip(
         ("< 8.333 мс", "8.333–16.667 мс", "16.667–33.333 мс", "33.333–50 мс", "50–100 мс", "≥ 100 мс"),
@@ -107,7 +116,8 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
         bucket_rows.append(f"  {label}: A {a_share:.1f}% → B {b_share:.1f}% ({b_share - a_share:+.1f} п.п.)")
     return (
         "Сравниваются две выборки; это само по себе не доказывает эффект настройки.\n"
-        f"Baseline (A): {before.name} ({before.sample_count:,} кадров)\n"
+        + context_warning
+        + f"Baseline (A): {before.name} ({before.sample_count:,} кадров)\n"
         f"  Средний FPS: {before.average_fps:.1f} · 1% low: {before.one_percent_low_fps:.1f} · p99 frametime: {before.p99_frame_time_ms:.2f} ms\n\n"
         f"Variant (B): {after.name} ({after.sample_count:,} кадров)\n"
         f"  Средний FPS: {after.average_fps:.1f} · 1% low: {after.one_percent_low_fps:.1f} · p99 frametime: {after.p99_frame_time_ms:.2f} ms\n\n"

@@ -131,5 +131,5 @@ def apply_profile_setting(path: Path, target: int, backup_dir: Path, expected_or
     backup = create_byte_backup(safe, backup_dir)
     if safe.read_bytes() != original:
         raise RuntimeError("The config changed after preview. Scan it again before applying.")
-    atomic_replace(safe, updated)
+    atomic_replace(safe, updated, expected_current_sha256=sha256(original))
     return backup, sha256(updated)

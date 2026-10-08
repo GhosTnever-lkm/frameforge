@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 - 2026-10-09
+
+- Tag local benchmark runs with an optional game and scene/preset label; warn when A/B labels differ or are missing.
+- Keep unlabelled benchmark history in v1 format; switch to schema v2 only after a game or scene label is saved, while keeping legacy entries available.
+- Keep labels local and out of aggregate CSV/JSON exports.
+- Check the expected current-file SHA-256 during apply and restore, and revalidate the supported path before atomic replacement. The checks are sequential; see README for the remaining concurrent-write limitation.
+- Resolve Windows Documents through the Known Folder API, including redirected OneDrive profiles.
+
 ## 0.5.0 - 2026-10-09
 
 - Export aggregate-only A/B benchmark comparisons as CSV or versioned JSON.
