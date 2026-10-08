@@ -15,10 +15,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..catalog import GUIDE, GUIDE_GAMES, GUIDES, GAMES
-from ..core.apply import ALLOWED_VALUES, apply_grass_distance, build_tuned_bytes, make_diff, read_grass_distance
+from ..core.apply import apply_profile_setting, build_profile_bytes, make_diff, read_profile_setting
 from ..core.benchmark import Benchmark, compare_benchmarks, load_frame_time_csv
 from ..core.backup import restore_from_backup, sha256
 from ..core.config_finder import find_skyrim_config
+from ..core.profiles import TUNING_PROFILES
 from ..core.safety import SafetyError
 from ..core.scanner import detect_skyrim_installs, system_snapshot
 
@@ -45,6 +46,7 @@ class MainWindow(QMainWindow):
         self.resize(1200, 780)
         self.setMinimumSize(960, 640)
         self.config_path: Path | None = None
+        self.game_folder: Path | None = None
         self.original: bytes | None = None
         self.preview_bytes: bytes | None = None
         self.last_backup: Path | None = None
@@ -82,7 +84,7 @@ class MainWindow(QMainWindow):
         safety = QLabel("ЛОКАЛЬНО\nТолько выбранные изменения\nБез античит-твиков")
         safety.setObjectName("safety")
         side.addWidget(safety)
-        version = QLabel("v0.1.0 · MIT")
+        version = QLabel("v0.2.0 · MIT")
         version.setObjectName("muted")
         side.addWidget(version)
 
@@ -227,13 +229,19 @@ class MainWindow(QMainWindow):
 
     def _optimizer_page(self):
         scroll, layout = self._scroll_page()
-        title = QLabel("Skyrim Special Edition · дальность травы")
+        title = QLabel("Skyrim Special Edition · профили травы")
         title.setStyleSheet("font-size:15pt;font-weight:700")
         layout.addWidget(title)
-        info = QLabel("Снижение fGrassStartFadeDistance уменьшает расстояние прорисовки травы и может сделать её исчезновение заметнее. Прирост FPS зависит от сцены и компьютера. Игра должна быть закрыта перед применением.")
-        info.setWordWrap(True)
-        info.setObjectName("muted")
-        layout.addWidget(info)
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Профиль:"))
+        self.profile_select = QComboBox()
+        self.profile_select.addItems([profile.name for profile in TUNING_PROFILES])
+        profile_row.addWidget(self.profile_select, 1)
+        layout.addLayout(profile_row)
+        self.profile_info = QLabel()
+        self.profile_info.setWordWrap(True)
+        self.profile_info.setObjectName("muted")
+        layout.addWidget(self.profile_info)
         pathrow = QHBoxLayout()
         self.path_label = QLabel("Папка Skyrim Special Edition не выбрана")
         self.path_label.setObjectName("muted")
@@ -244,15 +252,13 @@ class MainWindow(QMainWindow):
         pathrow.addWidget(choose)
         layout.addLayout(pathrow)
         values = QHBoxLayout()
-        values.addWidget(QLabel("[Grass] fGrassStartFadeDistance"))
+        values.addWidget(QLabel("Параметр травы"))
         self.current_value = QLabel("Текущее: —")
         self.current_value.setStyleSheet(f"color:{GREEN};font-weight:700")
         values.addWidget(self.current_value)
         values.addStretch(1)
         values.addWidget(QLabel("Новое значение:"))
         self.value_select = QComboBox()
-        self.value_select.addItems([str(value) for value in ALLOWED_VALUES])
-        self.value_select.setCurrentText("3000")
         values.addWidget(self.value_select)
         layout.addLayout(values)
         actions = QHBoxLayout()
@@ -273,11 +279,39 @@ class MainWindow(QMainWindow):
         self.diff_box.setPlaceholderText("Сканируй файл перед применением; здесь появится точный diff.")
         self.diff_box.setMinimumHeight(280)
         layout.addWidget(self.diff_box)
-        source = QLabel('<a href="https://stepmodifications.org/wiki/Guide:SkyrimPrefs_INI/Grass">Описание параметра: STEP SkyrimPrefs INI Grass Guide</a>')
+        source = QLabel('<a href="https://stepmodifications.org/wiki/Guide:SkyrimPrefs_INI/Grass">SkyrimPrefs.ini: дальность прорисовки</a> · <a href="https://stepmodifications.org/wiki/Guide:Skyrim_INI/Grass">Skyrim.ini: плотность травы</a>')
         source.setOpenExternalLinks(True)
         source.setObjectName("muted")
         layout.addWidget(source)
+        self.profile_select.currentIndexChanged.connect(self.on_profile_changed)
+        self.on_profile_changed()
         return scroll
+
+    def on_profile_changed(self):
+        if not hasattr(self, "profile_select"):
+            return
+        profile = TUNING_PROFILES[self.profile_select.currentIndex()]
+        self.profile_info.setText(profile.description + " Игра должна быть закрыта перед применением.")
+        self.value_select.clear()
+        self.value_select.addItems([str(value) for value in profile.values])
+        self.value_select.setCurrentText(str(profile.default_value))
+        if self.game_folder:
+            try:
+                self.config_path = find_skyrim_config(self.game_folder, profile.config_name)
+                self.path_label.setText(str(self.config_path))
+                self.scan_preview()
+            except (SafetyError, OSError, ValueError):
+                self.config_path = None
+                self.path_label.setText(f"{profile.config_name} не найден в выбранной папке")
+                self.original = self.preview_bytes = None
+                self.diff_box.clear()
+                self.current_value.setText("Текущее: —")
+        else:
+            self.config_path = None
+            self.path_label.setText(f"Папка настроек не выбрана · нужен {profile.config_name}")
+            self.original = self.preview_bytes = None
+            self.diff_box.clear()
+            self.current_value.setText("Текущее: —")
 
     def _benchmark_page(self):
         scroll, layout = self._scroll_page()
@@ -372,22 +406,20 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Выбери Documents\\My Games\\Skyrim Special Edition")
         if not folder:
             return
-        try:
-            self.config_path = find_skyrim_config(Path(folder))
-            self.path_label.setText(str(self.config_path))
-            self.scan_preview()
-        except (SafetyError, OSError, ValueError) as exc:
-            self.config_path = None
-            QMessageBox.warning(self, "Папка не поддерживается", str(exc))
+        self.game_folder = Path(folder)
+        self.on_profile_changed()
+        if not self.config_path:
+            profile = TUNING_PROFILES[self.profile_select.currentIndex()]
+            QMessageBox.warning(self, "Файл профиля не найден", f"В этой папке нет {profile.config_name}. Выбери другой профиль или папку настроек.")
 
     def scan_preview(self):
         if not self.config_path:
             QMessageBox.information(self, "FrameForge", "Сначала выбери каталог Skyrim Special Edition.")
             return
         try:
-            value, original = read_grass_distance(self.config_path)
+            value, original = read_profile_setting(self.config_path)
             target = int(self.value_select.currentText())
-            updated = build_tuned_bytes(original, target)
+            updated = build_profile_bytes(original, target, self.config_path.name)
             self.original = original
             self.preview_bytes = updated
             self.current_value.setText(f"Текущее: {value}")
@@ -428,20 +460,22 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "FrameForge", "Сначала проверь файл и изучи diff.")
             return
         try:
-            _, current_bytes = read_grass_distance(self.config_path)
+            _, current_bytes = read_profile_setting(self.config_path)
         except (SafetyError, OSError, ValueError) as exc:
             QMessageBox.warning(self, "Нужно просканировать заново", str(exc))
             return
         if current_bytes != self.original:
-            QMessageBox.warning(self, "Файл изменился", "SkyrimPrefs.ini изменился после сканирования. Проверь его снова и сравни новый diff.")
+            QMessageBox.warning(self, "Файл изменился", f"{self.config_path.name} изменился после сканирования. Проверь его снова и сравни новый diff.")
             self.scan_preview()
             return
         target = int(self.value_select.currentText())
-        answer = QMessageBox.question(self, "Подтвердить настройку", f"Будет сохранена точная резервная копия. Изменится только существующая строка [Grass] fGrassStartFadeDistance: {target}. Применить?")
+        profile = TUNING_PROFILES[self.profile_select.currentIndex()]
+        visible_effect = "Вся трава будет отключена." if profile.config_name == "Skyrim.ini" and target == 0 else "Внешний вид изменится согласно выбранному профилю."
+        answer = QMessageBox.question(self, "Подтвердить настройку", f"Будет сохранена точная резервная копия. Изменится только существующая строка [{profile.section}] {profile.setting}: {target}. {visible_effect} Игра должна быть закрыта. Применить?")
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
-            backup, _ = apply_grass_distance(self.config_path, target, app_data_dir() / "backups", expected_original=self.original)
+            backup, _ = apply_profile_setting(self.config_path, target, app_data_dir() / "backups", expected_original=self.original)
             rows = self._read_index()
             backup_hash = sha256(backup.read_bytes())
             rows.insert(0, {"backup": str(backup), "config": str(self.config_path), "sha256": backup_hash, "created": datetime.now().isoformat(timespec="seconds")})
@@ -488,17 +522,18 @@ class MainWindow(QMainWindow):
         self._restore(Path(row["backup"]), Path(row["config"]), row["sha256"])
 
     def _restore(self, backup: Path, config: Path, expected_sha256: str | None = None):
-        answer = QMessageBox.question(self, "Подтвердить откат", "Текущий SkyrimPrefs.ini будет заменён точной копией выбранного backup. Продолжить?")
+        answer = QMessageBox.question(self, "Подтвердить откат", f"Текущий {config.name} будет заменён точной копией выбранного backup. Продолжить?")
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
             restored_hash = restore_from_backup(backup, config, expected_sha256)
             self.last_backup, self.backup_config, self.last_backup_sha256 = backup, config, restored_hash
-            self.config_path = config
+            self.game_folder = config.parent
+            profile_index = next((i for i, profile in enumerate(TUNING_PROFILES) if profile.config_name.casefold() == config.name.casefold()), 0)
+            self.profile_select.setCurrentIndex(profile_index)
+            self.on_profile_changed()
             self.refresh_backups()
             self.show_page(3)
-            self.path_label.setText(str(config))
-            self.scan_preview()
             QMessageBox.information(self, "Восстановлено", "Файл восстановлен побайтово.")
         except (SafetyError, OSError, ValueError) as exc:
             QMessageBox.critical(self, "Откат не выполнен", str(exc))

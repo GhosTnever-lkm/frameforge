@@ -2,9 +2,13 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
 
-python -m pip install -e ".[build]"
+$PythonPath = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $PythonPath)) {
+    $PythonPath = (Get-Command python -ErrorAction Stop).Source
+}
+& $PythonPath -m pip install -e ".[build]"
 if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
-python -m PyInstaller --noconfirm --clean --windowed --name FrameForge run_frameforge.py
+& $PythonPath -m PyInstaller --noconfirm --clean --windowed --name FrameForge run_frameforge.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
 
 $Version = (Get-Content VERSION -Raw).Trim()

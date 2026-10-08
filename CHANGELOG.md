@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 - 2026-10-09
+
+- Add a second reversible Skyrim profile for grass density in `Skyrim.ini`, including a deliberate grass-off preset (`iMinGrassSize=0`).
+- Add exact-file backups, diff preview, SHA-256 verification and restore support for both Skyrim INI files.
+- Add profile-specific warnings, values and source links; reject negative density values.
+
 ## 0.1.0 - 2026-10-09
 
 - Add a Windows desktop UI, read-only system overview, and read-only Steam detection for Skyrim Special Edition.

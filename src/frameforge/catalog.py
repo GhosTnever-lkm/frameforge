@@ -1,12 +1,12 @@
-"""Game support catalog: only Skyrim has an automated file tweak in 0.1.0."""
+"""Game support catalog: Skyrim has reversible settings; other games have manual guides."""
 
 GAMES = [
     {
         "name": "The Elder Scrolls V: Skyrim Special Edition",
         "mode": "config",
-        "description": "Reduce grass fade distance in an existing SkyrimPrefs.ini. The game may regenerate settings; mod-manager profiles can use separate INIs and are not auto-detected.",
+        "description": "Adjust grass fade distance in SkyrimPrefs.ini or density in Skyrim.ini. The game may regenerate settings; mod-manager profiles can use separate INIs and are not auto-detected.",
         "source": "https://stepmodifications.org/wiki/Guide:SkyrimPrefs_INI/Grass",
-        "tweaks": ["Grass fade distance: 1000 / 3000 / 5000 / 7000", "Lower values draw grass over a shorter distance; expect visible pop-in. This does not remove grass or promise a fixed FPS gain."],
+        "tweaks": ["Grass fade distance: 1000 / 3000 / 5000 / 7000", "Grass density: 40 / 60 / 80; 0 disables grass", "Changes are previewed and backed up; this does not promise a fixed FPS gain."],
     },
 ]
 

@@ -48,7 +48,7 @@ def create_byte_backup(config: Path, backup_dir: Path) -> Path:
     safe = validate_config_path(config)
     backup_dir = _validate_backup_directory(backup_dir, create=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    backup = backup_dir / f"skyrimprefs-{timestamp}.ini.bak"
+    backup = backup_dir / f"frameforge-{safe.stem.casefold()}-{timestamp}.ini.bak"
     original = safe.read_bytes()
     with backup.open("xb") as stream:
         stream.write(original)
@@ -87,7 +87,8 @@ def restore_from_backup(backup: Path, target: Path, expected_sha256: str | None 
         raise SafetyError("Choose a backup from the FrameForge backups directory.")
     safe_backup_dir = _validate_backup_directory(backup.parent)
     backup = safe_backup_dir / backup.name
-    if backup.name.casefold().find("skyrimprefs-") != 0 or not backup.name.casefold().endswith(".ini.bak"):
+    expected_prefix = f"frameforge-{safe.stem.casefold()}-"
+    if not backup.name.casefold().startswith(expected_prefix) or not backup.name.casefold().endswith(".ini.bak"):
         raise SafetyError("The backup is missing or is not a FrameForge Skyrim backup.")
     if not backup.exists() or _is_reparse_or_link(backup) or not backup.is_file():
         raise SafetyError("The backup is missing or is not a regular file.")
@@ -96,6 +97,6 @@ def restore_from_backup(backup: Path, target: Path, expected_sha256: str | None 
     if expected_sha256 is not None and actual_sha256.casefold() != expected_sha256.casefold():
         raise SafetyError("The backup no longer matches its saved SHA-256; restore was stopped.")
     from .apply import validate_ini_payload
-    validate_ini_payload(payload)
+    validate_ini_payload(payload, safe.name)
     atomic_replace(safe, payload)
     return actual_sha256

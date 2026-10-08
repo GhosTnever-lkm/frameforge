@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from frameforge.core.apply import apply_grass_distance, build_tuned_bytes, make_diff, read_grass_distance
+from frameforge.core.apply import apply_grass_distance, apply_profile_setting, build_profile_bytes, build_tuned_bytes, make_diff, read_grass_distance, read_profile_setting
 from frameforge.core.backup import create_byte_backup, restore_from_backup
 from frameforge.core.benchmark import analyze_frame_times, compare_benchmarks, load_frame_time_csv
 from frameforge.core.safety import SafetyError, validate_config_path
@@ -19,6 +19,9 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.config = self.root / "SkyrimPrefs.ini"
         self.original = b"[Display]\r\niShadowMapResolution=2048\r\n\r\n[Grass]\r\nfGrassStartFadeDistance=7000.0000 ; user comment\r\nOther=keep\r\n"
         self.config.write_bytes(self.original)
+        self.skyrim_ini = self.root / "Skyrim.ini"
+        self.skyrim_ini_original = b"[General]\r\nsSomeSetting=1\r\n[Grass]\r\niMinGrassSize=20 ; density\r\n"
+        self.skyrim_ini.write_bytes(self.skyrim_ini_original)
         self.backups = Path(self.temp.name) / "backups"
 
     def tearDown(self):
@@ -37,6 +40,20 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertIn(b"iShadowMapResolution=2048\r\n", updated)
         self.assertIn(b"Other=keep\r\n", updated)
         self.assertIn("-fGrassStartFadeDistance=7000.0000 ; user comment\r\n", make_diff(self.original, updated))
+
+    def test_density_profile_can_disable_grass_and_restore_skyrim_ini(self):
+        current, data = read_profile_setting(self.skyrim_ini)
+        self.assertEqual(current, 20)
+        self.assertEqual(data, self.skyrim_ini_original)
+        updated = build_profile_bytes(data, 0, "Skyrim.ini")
+        self.assertIn(b"iMinGrassSize=0 ; density\r\n", updated)
+        with self.assertRaises(ValueError):
+            build_profile_bytes(data, -1, "Skyrim.ini")
+        backup, _ = apply_profile_setting(self.skyrim_ini, 0, self.backups, expected_original=data)
+        self.assertIn("frameforge-skyrim-", backup.name)
+        self.assertIn(b"iMinGrassSize=0", self.skyrim_ini.read_bytes())
+        restore_from_backup(backup, self.skyrim_ini)
+        self.assertEqual(self.skyrim_ini.read_bytes(), self.skyrim_ini_original)
 
     def test_bom_is_preserved(self):
         original = b"\xef\xbb\xbf[Grass]\n fGrassStartFadeDistance=7000\n"
@@ -87,7 +104,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         outside = Path(self.temp.name) / "outside.ini.bak"
         outside.write_bytes(self.original)
         self.backups.mkdir(parents=True)
-        linked_backup = self.backups / "skyrimprefs-linked.ini.bak"
+        linked_backup = self.backups / "frameforge-skyrimprefs-linked.ini.bak"
         try:
             linked_backup.symlink_to(outside)
         except (OSError, NotImplementedError):
