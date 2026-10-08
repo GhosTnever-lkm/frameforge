@@ -10,7 +10,13 @@ from pathlib import Path
 MAX_CSV_BYTES = 64 * 1024 * 1024
 MAX_SAMPLES = 5_000_000
 FRAME_TIME_COLUMN = "frame_time_ms"
-FRAME_TIME_BUCKET_EDGES_MS = (8.33, 16.67, 33.33, 50.0, 100.0)
+FRAME_TIME_BUCKET_EDGES_MS = (
+    1000.0 / 120.0,
+    1000.0 / 60.0,
+    1000.0 / 30.0,
+    1000.0 / 20.0,
+    1000.0 / 10.0,
+)
 
 
 @dataclass(frozen=True)
@@ -95,5 +101,5 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
         f"Разница среднего FPS: {fps_delta:+.1f} ({fps_percent:+.1f}%)\n"
         f"Разница 1% low: {low_delta:+.1f} FPS\n"
         f"Разница p99 frametime: {p99_delta:+.2f} ms ({'хуже' if p99_delta > 0 else 'лучше' if p99_delta < 0 else 'без изменений'})\n\n"
-        "Сравнение имеет смысл только при одинаковой сцене, разрешении, пресете и условиях запуска."
+        "Разница между прогонами сама по себе не доказывает причину. Повтори оба варианта в одинаковой сцене, разрешении, пресете и условиях; при малом числе кадров результат менее устойчив."
     )

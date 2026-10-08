@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from frameforge.core.apply import apply_grass_distance, apply_profile_setting, build_profile_bytes, build_tuned_bytes, make_diff, read_grass_distance, read_profile_setting
 from frameforge.core.backup import create_byte_backup, restore_from_backup
-from frameforge.core.benchmark import analyze_frame_times, compare_benchmarks, load_frame_time_csv
+from frameforge.core.benchmark import FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks, load_frame_time_csv
 from frameforge.core.safety import SafetyError, validate_config_path
 from frameforge.core.scanner import parse_libraryfolders
 
@@ -140,9 +140,11 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertEqual(run.p99_frame_time_ms, 10)
 
     def test_benchmark_exposes_frame_time_distribution_buckets(self):
-        run = analyze_frame_times("distribution", [4, 8.33, 16.67, 33.33, 50, 100])
+        run = analyze_frame_times("distribution", [4, *FRAME_TIME_BUCKET_EDGES_MS])
         self.assertEqual(run.frame_time_buckets, (1, 1, 1, 1, 1, 1))
         self.assertEqual(sum(run.frame_time_buckets), run.sample_count)
+        at_100ms = analyze_frame_times("100ms", [100.0])
+        self.assertEqual(at_100ms.frame_time_buckets[-1], 1)
 
     def test_benchmark_rejects_wrong_header_and_invalid_values(self):
         path = Path(self.temp.name) / "bad.csv"

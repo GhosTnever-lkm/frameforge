@@ -10,7 +10,7 @@ from ..core.benchmark import Benchmark
 class FrameTimeChart(QWidget):
     """Accessible, dependency-free chart of frame-time distribution buckets."""
 
-    _labels = ("< 8.33", "8.33–16.67", "16.67–33.33", "33.33–50", "50–100", "> 100")
+    _labels = ("< 8.333", "8.333–16.667", "16.667–33.333", "33.333–50", "50–100", "≥ 100")
     _before_color = QColor("#72a8ff")
     _after_color = QColor("#45d6a0")
     _grid_color = QColor("#293a56")
@@ -20,13 +20,23 @@ class FrameTimeChart(QWidget):
         super().__init__(parent)
         self.setMinimumHeight(260)
         self.setAccessibleName("Распределение времени кадров до и после")
-        self.setToolTip("Доля кадров по диапазонам времени кадра в миллисекундах")
+        self.setToolTip("Доля кадров по диапазонам времени кадра в миллисекундах; границы диапазонов не включаются справа")
         self._before: Benchmark | None = None
         self._after: Benchmark | None = None
 
     def set_runs(self, before: Benchmark | None, after: Benchmark | None) -> None:
         self._before = before
         self._after = after
+        descriptions = []
+        for label, run in (("A", before), ("B", after)):
+            if run is None:
+                continue
+            percentages = ", ".join(
+                f"{bucket}: {100 * count / run.sample_count:.1f}%"
+                for bucket, count in zip(self._labels, run.frame_time_buckets)
+            )
+            descriptions.append(f"{label}, {run.name}, {run.sample_count} кадров. {percentages}.")
+        self.setAccessibleDescription(" Распределение кадров: " + " ".join(descriptions))
         self.update()
 
     def paintEvent(self, event):  # noqa: N802 - Qt event naming
@@ -74,5 +84,5 @@ class FrameTimeChart(QWidget):
             painter.setBrush(color)
             painter.drawRoundedRect(QRectF(x, legend_y - 10, 10, 10), 2, 2)
             painter.setPen(self._text_color)
-            painter.drawText(x + 16, legend_y, "До: " + run.name if index == 0 else "После: " + run.name)
+            painter.drawText(x + 16, legend_y, f"{'A' if index == 0 else 'B'} · N={run.sample_count:,}")
         painter.end()

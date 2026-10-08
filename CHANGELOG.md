@@ -6,6 +6,7 @@
 - Add exact-file backups, diff preview, SHA-256 verification and restore support for both Skyrim INI files.
 - Add profile-specific warnings, values and source links; reject negative density values.
 - Add a frame-time distribution chart with before/after buckets for quick stutter comparison.
+- Restrict release write permissions to a post-quality tag-only job and refresh GitHub Actions dependencies.
 
 ## 0.1.0 - 2026-10-09
 
