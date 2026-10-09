@@ -497,6 +497,18 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertTrue(any("исключены строки" in warning for warning in warnings))
         self.assertTrue(any("неподходящим FrameType: 2" in warning for warning in warnings))
 
+    def test_presentmon_cpu_presented_accepts_case_insensitive_application_type(self):
+        path = Path(self.temp.name) / "presentmon-cpu-frame-type-case.csv"
+        path.write_text(
+            "MsBetweenPresents,FrameType\n16.0,application\n12.0,APPLICATION\n8.0,AMD_AFMF\n",
+            encoding="utf-8",
+        )
+        run, warnings = load_benchmark_csv(path)
+        self.assertEqual(run.metric_kind, "cpu-presented")
+        self.assertEqual(run.sample_count, 2)
+        self.assertEqual(run.median_frame_time_ms, 12.0)
+        self.assertTrue(any("неподходящим FrameType: 1 из 3 строк" in warning for warning in warnings))
+
     def test_presentmon_import_supports_semicolon_decimal_comma(self):
         path = Path(self.temp.name) / "regional.csv"
         path.write_text("MsBetweenDisplayChange;FrameType\n16,5;Application\n", encoding="utf-8")

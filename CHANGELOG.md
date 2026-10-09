@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.18.1 - 2026-10-10
+
+- Accept PresentMon `FrameType=Application` case-insensitively when filtering CPU-presented frame samples, while continuing to exclude generated and unknown frame types.
+- Add a regression test for lower- and upper-case application labels.
+
 ## 1.18.0 - 2026-10-10
 
 - Add an optional timed PresentMon capture for a selected running game process, with automatic CSV import into the local benchmark history.

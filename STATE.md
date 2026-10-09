@@ -1,5 +1,11 @@
 # FrameForge — project state
 
+## Подготовка к публикации — FrameForge v1.18.1
+
+- В CPU-presented импорте PresentMon фильтр `FrameType` теперь принимает `Application` без учёта регистра. `AMD_AFMF` и неизвестные типы по-прежнему исключаются. Версии, README и CHANGELOG синхронизированы.
+- Доступные локальные проверки: core suite 100 tests, 4 platform-dependent skips; `compileall` и `git diff --check` проходят. Полный GUI-suite требует PySide6; его Windows сборка и startup smoke выполняются в workflow.
+- Ожидаются commit/tag/release и успешные GitHub Actions для полной проверки Windows package.
+
 ## Published — FrameForge v1.17.0 (2026-10-10)
 
 - Commit `e92473c64dc4436d14ad6b91bb37dd1e623b637c` and tag `v1.17.0` are published. The update adds an optional Windows desktop panel that follows the visible CS:GO Legacy window in borderless-windowed mode; the in-game CFG menu remains a separate console menu.
@@ -151,3 +157,9 @@ Updated: 2026-10-10
 - Portable build собран отдельно `dist-v1.16.1/FrameForge-1.16.1-windows-x64.zip`, SHA-256 `3d46363a82016f29d2bf670e89308870c0fe3599d3b4659ffb968da829d7fbbd`; распакованный EXE стартовал с окном `FrameForge — Game Tuning Studio`. Windows UI Automation подтвердил оба новых чекбокса на странице «Игры».
 - В игровых бинарниках локальной CS:GO Legacy найдены `mat_disable_bloom`, `mat_disable_fancy_blending`, `r_dynamic`, sky toggles и RGB crosshair cvars. Цвет вражеских player models обычным CFG не подтверждён. Свежий запуск игры и FPS до/после не проведены; +20% / 288 FPS не подтверждены.
 - Версия ещё не запушена и не релизнута. Следующий шаг: коммит и GitHub CI; после зелёного CI — tag/release, портфолио и публикационный пост.
+
+## FrameForge v1.18.0 — опубликовано (2026-10-10)
+
+- Добавлен прямой таймерный захват PresentMon: выбрать официальный exe, имя процесса, длительность 30/60/120/300 сек. CSV автоматически импортируется в локальную историю с контекстом игры/сцены/заметок/чек-листа; история A/B помогает сравнить одинаковые сцены. Commit `aee9a65`, tag/release `v1.18.0`, CI `38000748615` completed success.
+- Архив скачан и проверен, SHA-256 `396c3f32ded33a7cf0bbf3cbea8334844235bc8ba2ad5dcb9e8608f35b802fd5`.
+- Live capture официальным PresentMon 2.6.0 на `FrameForge.exe` завершился `access denied` при старте ETW session. Нужны административное разрешение либо членство в Performance Log Users; права Windows не менялись. Поэтому фактический игровой замер и фиксированный прирост FPS не подтверждены.

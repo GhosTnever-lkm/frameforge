@@ -293,7 +293,7 @@ def load_benchmark_csv(path: Path) -> tuple[Benchmark, tuple[str, ...]]:
             normalized_frame_type = frame_type.replace("-", "_").replace(" ", "_")
             if normalized_frame_type not in {"", "application"}:
                 saw_non_application = True
-            if metric_kind == "cpu-presented" and frame_type != "application":
+            if metric_kind == "cpu-presented" and normalized_frame_type != "application":
                 dropped_type += 1
                 continue
             if metric_kind == "displayed" and normalized_frame_type not in {"application", "intel_xefg", "intel_xess_fg", "amd_afmf"}:
