@@ -12,7 +12,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
-    QMenu, QScrollArea, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
+    QMenu, QScrollArea, QStackedWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
@@ -459,6 +459,7 @@ class MainWindow(QMainWindow):
         self._benchmark_group_a: set[int] = set()
         self._benchmark_group_b: set[int] = set()
         self._active_benchmark_baseline: Benchmark | None = None
+        self._recent_benchmark_pairs: list[tuple[Benchmark, Benchmark]] = []
         self._last_benchmark_comparison = None
         history_filter_row = QHBoxLayout()
         self.benchmark_history_filter = QLineEdit()
@@ -567,6 +568,22 @@ class MainWindow(QMainWindow):
         compare_scope_hint = QLabel("Поиск замера ниже меняет A/B только после назначения. Фильтр списка истории влияет только на группы.")
         compare_scope_hint.setObjectName("muted")
         layout.addWidget(compare_scope_hint)
+        self.recent_pairs_toggle = QToolButton()
+        self.recent_pairs_toggle.setText("Недавние сравнения (сессия)")
+        self.recent_pairs_toggle.setCheckable(True)
+        self.recent_pairs_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.recent_pairs_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.recent_pairs_toggle.setAccessibleName("Показать недавние сравнения в этой сессии")
+        layout.addWidget(self.recent_pairs_toggle)
+        self.recent_pairs_list = QListWidget()
+        self.recent_pairs_list.setAccessibleName("Последние десять сравнений в этой сессии")
+        self.recent_pairs_list.setMaximumHeight(132)
+        self.recent_pairs_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.recent_pairs_list.setVisible(False)
+        self.recent_pairs_toggle.toggled.connect(self._toggle_recent_pairs)
+        self.recent_pairs_list.itemClicked.connect(self._restore_recent_pair)
+        self.recent_pairs_list.itemActivated.connect(self._restore_recent_pair)
+        layout.addWidget(self.recent_pairs_list)
         pair_search_row = QHBoxLayout()
         pair_search_row.addWidget(QLabel("Найти замер для A/B:"))
         self.benchmark_pair_search = QLineEdit()
@@ -602,6 +619,7 @@ class MainWindow(QMainWindow):
         export_scope_hint.setObjectName("muted")
         layout.addWidget(export_scope_hint)
         self._refresh_benchmark_history()
+        self._refresh_recent_benchmark_pairs()
         self.benchmark_report = QTextEdit()
         self.benchmark_report.setReadOnly(True)
         self.benchmark_report.setPlaceholderText("Импортируй два CSV для обычного сравнения или назначь не менее трёх замеров на каждую группу A/B.")
@@ -763,7 +781,7 @@ class MainWindow(QMainWindow):
         if len(self.benchmark_runs) >= 2:
             self.benchmark_before.setCurrentIndex(len(self.benchmark_runs) - 2)
             self.benchmark_after.setCurrentIndex(len(self.benchmark_runs) - 1)
-            self.compare_benchmark_selection()
+            self.compare_benchmark_selection(record_recent=False)
 
     def _refresh_benchmark_history(self):
         self.benchmark_list.clear()
@@ -803,6 +821,7 @@ class MainWindow(QMainWindow):
         self._refresh_benchmark_pair_identities()
         if hasattr(self, "benchmark_pair_search"):
             self._search_benchmark_pairs(self.benchmark_pair_search.text())
+        self._refresh_recent_benchmark_pairs()
 
     def _refresh_benchmark_pair_identities(self):
         if not hasattr(self, "benchmark_before_identity"):
@@ -957,7 +976,7 @@ class MainWindow(QMainWindow):
             hint = "Выбери игру, чтобы увидеть её чек-лист."
         self.benchmark_checklist_hint.setText(hint)
 
-    def compare_benchmark_selection(self):
+    def compare_benchmark_selection(self, *_args, record_recent: bool = True):
         selection = self._selected_benchmark_pair()
         if selection is None:
             return
@@ -969,6 +988,82 @@ class MainWindow(QMainWindow):
         self.benchmark_chart_note.show()
         self._last_benchmark_comparison = ("pair", before, after)
         self.export_benchmark_button.setEnabled(True)
+        if record_recent:
+            self._remember_recent_benchmark_pair(before, after)
+
+    def _toggle_recent_pairs(self, expanded: bool):
+        self.recent_pairs_list.setVisible(expanded)
+        self.recent_pairs_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.recent_pairs_toggle.setAccessibleName(
+            "Скрыть недавние сравнения этой сессии" if expanded else "Показать недавние сравнения этой сессии"
+        )
+
+    def _recent_run_index(self, target: Benchmark) -> int | None:
+        return next((index for index, run in enumerate(self.benchmark_runs) if run is target), None)
+
+    def _refresh_recent_benchmark_pairs(self):
+        if not hasattr(self, "recent_pairs_list"):
+            return
+        self.recent_pairs_list.clear()
+        for pair_index, (before, after) in enumerate(self._recent_benchmark_pairs):
+            before_index = self._recent_run_index(before)
+            after_index = self._recent_run_index(after)
+            before_label = f"A #{before_index + 1:03d}" if before_index is not None else "A [нет в истории]"
+            after_label = f"B #{after_index + 1:03d}" if after_index is not None else "B [нет в истории]"
+            item = QListWidgetItem(f"{before_label} {before.name} → {after_label} {after.name}")
+            item.setData(Qt.ItemDataRole.UserRole, pair_index)
+            if before_index is None or after_index is None:
+                item.setText(f"Недоступна · {item.text()}")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                item.setToolTip("Один из прогонов больше не находится в истории.")
+            else:
+                item.setToolTip("Подставить эту пару в A/B; отчёт потребуется построить заново.")
+            self.recent_pairs_list.addItem(item)
+        can_show = len(self.benchmark_runs) >= 2 and bool(self._recent_benchmark_pairs)
+        self.recent_pairs_toggle.setVisible(can_show)
+        self.recent_pairs_toggle.setEnabled(can_show)
+        self.recent_pairs_toggle.setText(f"Недавние сравнения (сессия) · {len(self._recent_benchmark_pairs)}")
+        if not can_show and self.recent_pairs_toggle.isChecked():
+            self.recent_pairs_toggle.setChecked(False)
+
+    def _remember_recent_benchmark_pair(self, before: Benchmark, after: Benchmark):
+        pair = (before, after)
+        self._recent_benchmark_pairs = [
+            existing for existing in self._recent_benchmark_pairs
+            if self._recent_run_index(existing[0]) is not None and self._recent_run_index(existing[1]) is not None
+            and not (existing[0] is before and existing[1] is after)
+        ]
+        self._recent_benchmark_pairs.insert(0, pair)
+        self._recent_benchmark_pairs = self._recent_benchmark_pairs[:10]
+        self._refresh_recent_benchmark_pairs()
+
+    def _restore_recent_pair(self, item: QListWidgetItem):
+        pair_index = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(pair_index, bool) or not isinstance(pair_index, int) or not 0 <= pair_index < len(self._recent_benchmark_pairs):
+            return
+        before, after = self._recent_benchmark_pairs[pair_index]
+        before_index = self._recent_run_index(before)
+        after_index = self._recent_run_index(after)
+        if before_index is None or after_index is None or before_index == after_index:
+            self.benchmark_pair_search_status.setText("Эта пара больше недоступна в истории.")
+            self._refresh_recent_benchmark_pairs()
+            return
+        self.benchmark_before.blockSignals(True)
+        self.benchmark_after.blockSignals(True)
+        try:
+            self.benchmark_before.setCurrentIndex(before_index)
+            self.benchmark_after.setCurrentIndex(after_index)
+        finally:
+            self.benchmark_before.blockSignals(False)
+            self.benchmark_after.blockSignals(False)
+        self._last_benchmark_comparison = None
+        self.export_benchmark_button.setEnabled(False)
+        self.benchmark_report.setPlainText("Недавняя пара подставлена. Нажми «Сравнить», чтобы построить новый отчёт и экспорт.")
+        self.benchmark_chart.hide()
+        self.benchmark_chart_title.hide()
+        self.benchmark_chart_note.hide()
+        self.benchmark_pair_search_status.setText("Пара из недавних сравнений подставлена; отчёт ещё не построен.")
+        self._refresh_benchmark_pair_identities()
 
     def _selected_benchmark_runs(self) -> list[Benchmark]:
         indexes = sorted({item.data(Qt.ItemDataRole.UserRole) for item in self.benchmark_list.selectedItems()})
@@ -1375,6 +1470,10 @@ class MainWindow(QMainWindow):
         self.benchmark_runs = updated
         if not pinning and self._active_benchmark_baseline is old_run:
             self._active_benchmark_baseline = None
+        self._recent_benchmark_pairs = [
+            (new_run if before is old_run else before, new_run if after is old_run else after)
+            for before, after in self._recent_benchmark_pairs
+        ]
         retained_ids = {id(run) for run in updated}
         self._benchmark_group_a.intersection_update(retained_ids)
         self._benchmark_group_b.intersection_update(retained_ids)

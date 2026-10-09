@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QPushButton
 
 from frameforge.core.benchmark import analyze_frame_times
@@ -239,6 +240,7 @@ class ReferenceRunUiTests(unittest.TestCase):
             self.window.import_benchmark()
         self.assertIs(self.window._active_benchmark_baseline, reference)
         self.assertIs(self.window.benchmark_runs[0], reference)
+        self.assertEqual(self.window._recent_benchmark_pairs, [])
         self.window.benchmark_list.setCurrentRow(1)
         self.assertTrue(self.window.compare_selected_with_active_baseline())
         self.assertEqual(self.window.benchmark_before.currentData(), 0)
@@ -255,6 +257,70 @@ class ReferenceRunUiTests(unittest.TestCase):
         self.assertIs(self.window._active_benchmark_baseline, reference)
         self.assertTrue(self.window.benchmark_runs[0].is_reference)
         self.assertTrue(self.window.benchmark_store.load()[0].is_reference)
+
+    def test_recent_pair_list_deduplicates_caps_and_restores_without_reusing_report(self):
+        self.window.benchmark_runs = [
+            analyze_frame_times(f"run-{index}.csv", [10.0 + index] * 4)
+            for index in range(12)
+        ]
+        self.window._refresh_benchmark_history()
+        self.assertTrue(self.window.recent_pairs_list.isHidden())
+        self.assertFalse(self.window.recent_pairs_toggle.isEnabled())
+        for index in range(11):
+            self.window.benchmark_before.setCurrentIndex(index)
+            self.window.benchmark_after.setCurrentIndex(index + 1)
+            self.window.compare_benchmark_selection()
+        self.assertEqual(len(self.window._recent_benchmark_pairs), 10)
+        self.assertIs(self.window._recent_benchmark_pairs[0][0], self.window.benchmark_runs[10])
+        self.window.benchmark_before.setCurrentIndex(0)
+        self.window.benchmark_after.setCurrentIndex(1)
+        self.window.compare_benchmark_selection()
+        self.window.compare_benchmark_selection()
+        self.assertEqual(len(self.window._recent_benchmark_pairs), 10)
+        self.assertIs(self.window._recent_benchmark_pairs[0][0], self.window.benchmark_runs[0])
+        self.assertIs(self.window._recent_benchmark_pairs[0][1], self.window.benchmark_runs[1])
+        self.assertEqual(self.window.benchmark_store.load(), [])
+        self.window.recent_pairs_toggle.click()
+        self.assertFalse(self.window.recent_pairs_list.isHidden())
+
+        self.window._restore_recent_pair(self.window.recent_pairs_list.item(1))
+
+        self.assertEqual(self.window.benchmark_before.currentData(), 10)
+        self.assertEqual(self.window.benchmark_after.currentData(), 11)
+        self.assertIsNone(self.window._last_benchmark_comparison)
+        self.assertFalse(self.window.export_benchmark_button.isEnabled())
+        self.assertIn("Нажми «Сравнить»", self.window.benchmark_report.toPlainText())
+
+    def test_recent_pair_disables_after_history_eviction_and_unpin_relinks_identity(self):
+        reference = replace(analyze_frame_times("reference.csv", [11.0] * 4), is_reference=True)
+        ordinary = analyze_frame_times("ordinary.csv", [12.0] * 4)
+        evicted = analyze_frame_times("evicted.csv", [13.0] * 4)
+        self.window.benchmark_runs = [reference, ordinary, evicted]
+        self.window.benchmark_store.save(self.window.benchmark_runs)
+        self.window._refresh_benchmark_history()
+        self.window._remember_recent_benchmark_pair(reference, ordinary)
+        self.window.benchmark_list.setCurrentRow(0)
+        self.window.toggle_selected_reference()
+        updated_reference = self.window.benchmark_runs[0]
+        self.assertIs(self.window._recent_benchmark_pairs[0][0], updated_reference)
+        self.assertTrue(self.window.recent_pairs_list.item(0).flags() & Qt.ItemFlag.ItemIsEnabled)
+
+        self.window.benchmark_runs = [ordinary]
+        self.window._refresh_benchmark_history()
+        stale = self.window.recent_pairs_list.item(0)
+        self.assertFalse(stale.flags() & Qt.ItemFlag.ItemIsEnabled)
+        self.assertIn("Недоступна", stale.text())
+        self.assertIn("больше не находится", stale.toolTip())
+        previous_pair = (self.window.benchmark_before.currentData(), self.window.benchmark_after.currentData())
+        self.window._restore_recent_pair(stale)
+        self.assertEqual((self.window.benchmark_before.currentData(), self.window.benchmark_after.currentData()), previous_pair)
+        self.assertIn("больше недоступна", self.window.benchmark_pair_search_status.text())
+        self.window.recent_pairs_toggle.setChecked(True)
+        self.window.benchmark_runs = [ordinary]
+        self.window._refresh_benchmark_history()
+        self.assertFalse(self.window.recent_pairs_toggle.isEnabled())
+        self.assertFalse(self.window.recent_pairs_toggle.isChecked())
+        self.assertTrue(self.window.recent_pairs_list.isHidden())
 
     def test_unpin_at_capacity_requires_confirmation_and_evicts_oldest_ordinary(self):
         runs = [analyze_frame_times(f"run-{index}.csv", [10 + index]) for index in range(MAX_HISTORY + 1)]

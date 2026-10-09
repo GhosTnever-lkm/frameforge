@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.12.0 - 2026-10-09
+
+- Keep the last 10 distinct successful A/B comparisons in a collapsed, session-only list; repeat pairs move to the top.
+- Restore a recent pair into A/B selectors without reusing its old report; require an explicit Compare action. Mark pairs unavailable if a run leaves history and relink the same run when its pin/reference flag changes.
+- Keep the list local to the current session and outside benchmark storage and exports.
+
 ## 1.11.0 - 2026-10-09
 
 - Let one pinned benchmark be marked as the active baseline for the current app session, with a visible history marker; unpinning it clears the session selection.
