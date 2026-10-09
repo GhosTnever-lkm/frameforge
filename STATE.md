@@ -5,12 +5,12 @@ Updated: 2026-10-09
 ## Current version
 
 - Published baseline before this work: v1.0.1.
-- Work in progress: v1.1.0, optional local PresentMon counter summaries.
-- Current source checks: 82 unit tests pass; 4 platform-dependent symlink tests are skipped.
+- Published: v1.1.0, optional local PresentMon counter summaries.
+- Local source checks: 82 unit tests pass; 4 platform-dependent symlink tests are skipped. GitHub Actions on the v1.1.0 tag passed the full quality suite, Windows portable build, and executable startup smoke test.
 - GUI smoke: repeated A/B report showed optional GPU Busy values, per-run coverage, and explicit missing-column rows.
-- Windows portable build: launch verified as `FrameForge — Game Tuning Studio`.
-- Release archive: `dist/FrameForge-1.1.0-windows-x64.zip`.
-- SHA-256: `e55bb83cd8c7e7b5458fac6bfa407bae83d9ff6762fd38bb2ecb29ca96d47e9e`.
+- Windows portable build: GitHub release asset downloaded, SHA-256 verified, and launched as `FrameForge — Game Tuning Studio`.
+- Release archive: [FrameForge v1.1.0](https://github.com/GhosTnever-lkm/frameforge/releases/tag/v1.1.0), `FrameForge-1.1.0-windows-x64.zip`.
+- Published ZIP SHA-256: `e5965ae357f48324f823d184be5cd4db43b228a0d0e96a034bf646d40beee174`.
 - DeepSeek review: no blocking defects found from the supplied implementation description; wording clarifies that coverage is over accepted frametime rows and zero values are reported as recorded.
 
 ## v1.1.0 behavior
@@ -22,6 +22,5 @@ Updated: 2026-10-09
 
 ## Next
 
-1. Commit and push v1.1.0 source.
-2. Verify branch/tag GitHub Actions and publish the GitHub Release with the tested archive and checksum.
-3. Update the profile portfolio/release links after publication.
+1. Update the profile portfolio/release links to highlight v1.1.0.
+2. Continue FrameForge improvements within the five-hour work block.
