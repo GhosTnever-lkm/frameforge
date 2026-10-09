@@ -23,7 +23,7 @@ from ..core.benchmark import (
     export_comparison_csv, export_comparison_json, export_group_comparison_csv,
     export_group_comparison_json, load_benchmark_csv,
 )
-from ..core.benchmark_store import BenchmarkStore
+from ..core.benchmark_store import BenchmarkStore, MAX_HISTORY
 from ..core.backup import restore_from_backup, sha256
 from ..core.config_finder import find_skyrim_config
 from ..core.profiles import TUNING_PROFILES
@@ -459,8 +459,8 @@ class MainWindow(QMainWindow):
     def import_benchmark(self):
         setting_key = ""
         setting_value = None
-        path, _ = QFileDialog.getOpenFileName(self, "Выбрать CSV с временем кадров", "", "CSV files (*.csv);;All files (*)")
-        if not path:
+        paths, _ = QFileDialog.getOpenFileNames(self, "Выбрать один или несколько CSV с временем кадров", "", "CSV files (*.csv);;All files (*)")
+        if not paths:
             return
         if self.benchmark_include_setting.isChecked():
             if self.benchmark_game.currentData() != "The Elder Scrolls V: Skyrim Special Edition":
@@ -474,48 +474,74 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError) as exc:
                 QMessageBox.warning(self, "Снимок настройки не добавлен", f"Не удалось безопасно прочитать разрешённый параметр. CSV не импортирован.\n{exc}")
                 return
-        try:
-            run, warnings = load_benchmark_csv(Path(path))
-            run = Benchmark(
-                name=run.name,
-                game=self.benchmark_game.currentData() or "",
-                scene=self.benchmark_scene.text().strip(),
-                sample_count=run.sample_count,
-                average_fps=run.average_fps,
-                one_percent_low_fps=run.one_percent_low_fps,
-                p99_frame_time_ms=run.p99_frame_time_ms,
-                median_frame_time_ms=run.median_frame_time_ms,
-                min_frame_time_ms=run.min_frame_time_ms,
-                max_frame_time_ms=run.max_frame_time_ms,
-                frame_time_buckets=run.frame_time_buckets,
-                metric_kind=run.metric_kind,
-                change_note=self.benchmark_change_note.text().strip(),
-                frame_timing=run.frame_timing,
-                frame_budget_counts=run.frame_budget_counts,
-                setting_key=setting_key,
-                setting_value=setting_value,
-                manual_changes=tuple(
-                    self.benchmark_changes.item(index).data(Qt.ItemDataRole.UserRole)
-                    for index in range(self.benchmark_changes.count())
-                    if self.benchmark_changes.item(index).checkState() == Qt.CheckState.Checked
-                ),
-            )
-        except (OSError, UnicodeError, ValueError, csv.Error) as exc:
-            QMessageBox.warning(self, "CSV не загружен", str(exc))
+        imported: list[Benchmark] = []
+        file_warnings: list[str] = []
+        file_errors: list[str] = []
+        manual_changes = tuple(
+            self.benchmark_changes.item(index).data(Qt.ItemDataRole.UserRole)
+            for index in range(self.benchmark_changes.count())
+            if self.benchmark_changes.item(index).checkState() == Qt.CheckState.Checked
+        )
+        for selected_index, path in enumerate(paths, start=1):
+            try:
+                run, warnings = load_benchmark_csv(Path(path))
+                imported.append(Benchmark(
+                    name=run.name,
+                    game=self.benchmark_game.currentData() or "",
+                    scene=self.benchmark_scene.text().strip(),
+                    sample_count=run.sample_count,
+                    average_fps=run.average_fps,
+                    one_percent_low_fps=run.one_percent_low_fps,
+                    p99_frame_time_ms=run.p99_frame_time_ms,
+                    median_frame_time_ms=run.median_frame_time_ms,
+                    min_frame_time_ms=run.min_frame_time_ms,
+                    max_frame_time_ms=run.max_frame_time_ms,
+                    frame_time_buckets=run.frame_time_buckets,
+                    metric_kind=run.metric_kind,
+                    change_note=self.benchmark_change_note.text().strip(),
+                    frame_timing=run.frame_timing,
+                    frame_budget_counts=run.frame_budget_counts,
+                    setting_key=setting_key,
+                    setting_value=setting_value,
+                    manual_changes=manual_changes,
+                ))
+                file_warnings.extend(f"#{selected_index} {Path(path).name}: {warning}" for warning in warnings)
+            except (OSError, UnicodeError, ValueError, csv.Error) as exc:
+                file_errors.append(f"#{selected_index} {Path(path).name}: {exc}")
+        if not imported:
+            details_lines = file_errors[:10]
+            if len(file_errors) > 10:
+                details_lines.append(f"… и ещё {len(file_errors) - 10} файлов с ошибками")
+            details = "\n".join(details_lines) or "Не удалось получить данные из выбранных файлов."
+            QMessageBox.warning(self, "CSV не загружены", details)
             return
-        if warnings:
-            QMessageBox.information(self, "Тип метрики и обработка CSV", "\n".join(warnings))
-        self.benchmark_runs.append(run)
+        updated_runs = (self.benchmark_runs + imported)[-MAX_HISTORY:]
         try:
-            self.benchmark_store.save(self.benchmark_runs)
+            self.benchmark_store.save(updated_runs)
         except (OSError, ValueError) as exc:
-            self.benchmark_runs.pop()
-            QMessageBox.critical(self, "Замер не сохранён", f"Новый результат не добавлен в историю. Предыдущая история сохранена.\n{exc}")
+            QMessageBox.critical(self, "Замеры не сохранены", f"Ни один новый результат не добавлен в историю. Предыдущая история сохранена.\n{exc}")
             return
+        self.benchmark_runs = updated_runs
+        retained_ids = {id(run) for run in updated_runs}
+        self._benchmark_group_a.intersection_update(retained_ids)
+        self._benchmark_group_b.intersection_update(retained_ids)
         self.benchmark_change_note.clear()
         self.benchmark_include_setting.setChecked(False)
         self._refresh_benchmark_checklist()
         self._refresh_benchmark_history()
+        notices = []
+        if file_errors:
+            error_lines = file_errors[:10]
+            if len(file_errors) > 10:
+                error_lines.append(f"… и ещё {len(file_errors) - 10} файлов с ошибками")
+            notices.append(f"Не импортировано ({len(file_errors)}):\n" + "\n".join(error_lines))
+        if file_warnings:
+            warning_lines = file_warnings[:12]
+            if len(file_warnings) > 12:
+                warning_lines.append(f"… и ещё {len(file_warnings) - 12} предупреждений")
+            notices.append("Предупреждения импорта:\n" + "\n".join(warning_lines))
+        if notices:
+            QMessageBox.information(self, f"Импортировано {len(imported)} из {len(paths)} CSV", "\n\n".join(notices))
         if len(self.benchmark_runs) >= 2:
             self.benchmark_before.setCurrentIndex(len(self.benchmark_runs) - 2)
             self.benchmark_after.setCurrentIndex(len(self.benchmark_runs) - 1)

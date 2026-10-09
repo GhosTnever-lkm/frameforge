@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0 - 2026-10-09
+
+- Import multiple benchmark CSV files in one operation for faster repeated A/B capture workflows.
+- Apply the current game, scene and manually selected checklist context consistently to each selected file; report per-file parse failures and continue importing valid files. Numbered notices disambiguate repeated filenames and summarize omitted errors/warnings.
+- Save each batch atomically and keep the in-memory and on-disk history aligned to the newest 100 runs.
+- Automatically compare the two newest retained runs after a successful import; document this selection in the README.
+
 ## 1.2.0 - 2026-10-09
 
 - Add cross-game frame-budget comparisons for 30/60/90/120/144/165/240 FPS, using counts of accepted frames at or below each exact `1000/FPS` threshold.
