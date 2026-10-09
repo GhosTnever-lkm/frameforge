@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.17.0 - 2026-10-10
+
+- Add a separate, interactive always-on-top FrameForge panel that tracks a visible CS:GO Legacy window and hides when the user switches to another app.
+- Add an option to launch the game windowed without borders so the panel can appear beside the game; retain the game's in-console FrameForge menu for controls that execute inside CS:GO.
+- Link the panel's settings to the game's profile controls and add a tray-menu shortcut; document that the panel is a desktop overlay, not injected into the game process.
+- Throttle window discovery while waiting for CS:GO and add placement and launch-argument regression tests.
+
 ## 1.16.1 - 2026-10-09
 
 - Add red high-contrast crosshair and optional startup loading for the CS:GO Legacy profile on the actual Games page.

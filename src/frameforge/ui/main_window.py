@@ -6,12 +6,13 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QIcon, QDesktopServices, QCursor
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont, QIcon, QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
@@ -31,6 +32,10 @@ from ..core.benchmark import (
 from ..core.benchmark_store import BenchmarkStore, MAX_HISTORY, MAX_REFERENCE_RUNS, retain_benchmark_runs
 from ..core.backup import restore_from_backup, sha256
 from ..core.config_finder import find_skyrim_config
+from ..core.game_overlay import (
+    activate_window, find_csgo_window, foreground_window_handle, get_csgo_window,
+    place_overlay, position_overlay_window,
+)
 from ..core.profiles import TUNING_PROFILES
 from ..core.safety import SafetyError
 from ..core.settings_snapshot import read_allowed_setting_snapshot
@@ -145,6 +150,16 @@ class MainWindow(QMainWindow):
         self.csgo_cfg_dir = self._find_csgo_legacy_cfg()
         self._build()
         self._style()
+        self.game_overlay = self.create_game_overlay()
+        self.game_overlay.setStyleSheet(self.styleSheet())
+        self._csgo_overlay_hwnd = 0
+        self._overlay_tracking = False
+        self._overlay_activate_pending_until = 0.0
+        self._overlay_next_search_at = 0.0
+        self._overlay_last_geometry: tuple[int, int, int, int] | None = None
+        self._overlay_timer = QTimer(self)
+        self._overlay_timer.setInterval(200)
+        self._overlay_timer.timeout.connect(self._update_game_overlay)
         self.show_page(0)
 
     @staticmethod
@@ -170,18 +185,41 @@ class MainWindow(QMainWindow):
         return None
 
     def create_game_overlay(self):
-        """Create a small always-on-top game guide and benchmark launcher."""
-        overlay = QDialog(None, Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
+        """Create the interactive panel that follows a foreground CS:GO Legacy window."""
+        overlay = QDialog(
+            None,
+            Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint,
+        )
+        overlay.setObjectName("gameOverlay")
         overlay.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         overlay.setWindowTitle("FrameForge · игровая панель")
         overlay.setWindowIcon(self.windowIcon())
         overlay.setMinimumWidth(360)
-        layout = QVBoxLayout(overlay)
+        overlay.setMaximumWidth(430)
+        outer = QVBoxLayout(overlay)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(14, 10, 8, 8)
         heading = QLabel("FRAMEFORGE  ·  GAME PANEL")
         heading.setStyleSheet(f"color:{ACCENT};font-size:11pt;font-weight:800")
-        layout.addWidget(heading)
-        intro = QLabel("Подсказки и быстрые замеры поверх игры")
+        header_layout.addWidget(heading, 1)
+        hide_panel = QPushButton("Скрыть")
+        hide_panel.setAccessibleName("Скрыть панель FrameForge поверх CS:GO Legacy")
+        hide_panel.clicked.connect(self._hide_game_overlay)
+        header_layout.addWidget(hide_panel)
+        outer.addWidget(header)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(14, 4, 14, 14)
+        layout.setSpacing(9)
+        intro = QLabel("Панель закреплена поверх окна игры. Работает в оконном режиме без рамки.")
         intro.setObjectName("muted")
+        intro.setWordWrap(True)
         layout.addWidget(intro)
 
         self.overlay_game = QComboBox()
@@ -216,40 +254,59 @@ class MainWindow(QMainWindow):
         launch.setObjectName("primary")
         launch.clicked.connect(self.launch_csgo_legacy)
         layout.addWidget(launch)
-        cfg_row = QHBoxLayout()
-        self.csgo_cfg_label = QLabel(str(self.csgo_cfg_dir) if self.csgo_cfg_dir else "Папка cfg не выбрана")
-        self.csgo_cfg_label.setWordWrap(True)
-        self.csgo_cfg_label.setObjectName("muted")
-        cfg_row.addWidget(self.csgo_cfg_label, 1)
-        choose_cfg = QPushButton("Выбрать cfg…")
+        self.overlay_cfg_path = QLabel(str(self.csgo_cfg_dir) if self.csgo_cfg_dir else "Папка cfg не выбрана")
+        self.overlay_cfg_path.setWordWrap(True)
+        self.overlay_cfg_path.setObjectName("muted")
+        layout.addWidget(self.overlay_cfg_path)
+        choose_cfg = QPushButton("Выбрать папку cfg…")
         choose_cfg.clicked.connect(self.choose_csgo_cfg)
-        cfg_row.addWidget(choose_cfg)
-        layout.addLayout(cfg_row)
-        self.csgo_fps_limit = QComboBox()
+        layout.addWidget(choose_cfg)
+        self.overlay_csgo_fps_limit = QComboBox()
         for value, label in ((0, "Без лимита FPS"), (120, "Лимит 120 FPS"), (144, "Лимит 144 FPS"), (165, "Лимит 165 FPS"), (240, "Лимит 240 FPS"), (360, "Лимит 360 FPS")):
-            self.csgo_fps_limit.addItem(label, value)
-        layout.addWidget(self.csgo_fps_limit)
-        self.csgo_dynamic_lights = QCheckBox("Отключить динамическое освещение (r_dynamic 0)")
-        layout.addWidget(self.csgo_dynamic_lights)
-        self.csgo_bloom = QCheckBox("Отключить bloom (mat_disable_bloom 1)")
-        layout.addWidget(self.csgo_bloom)
-        self.csgo_blending = QCheckBox("Упростить blending (mat_disable_fancy_blending 1)")
-        layout.addWidget(self.csgo_blending)
-        self.csgo_dark_sky = QCheckBox("Тёмное небо в локальной практике (sv_skyname)")
-        layout.addWidget(self.csgo_dark_sky)
-        self.csgo_hide_sky = QCheckBox("Скрыть skybox (только локальная практика)")
-        layout.addWidget(self.csgo_hide_sky)
+            self.overlay_csgo_fps_limit.addItem(label, value)
+        self._bind_overlay_combo(self.csgo_fps_limit, self.overlay_csgo_fps_limit)
+        layout.addWidget(self.overlay_csgo_fps_limit)
+        overlay_options = (
+            ("csgo_dynamic_lights", "overlay_csgo_dynamic_lights", "Снизить динамическое освещение"),
+            ("csgo_bloom", "overlay_csgo_bloom", "Отключить bloom"),
+            ("csgo_blending", "overlay_csgo_blending", "Упростить fancy blending"),
+            ("csgo_red_crosshair", "overlay_csgo_red_crosshair", "Красный контрастный прицел"),
+            ("csgo_startup_menu", "overlay_csgo_startup_menu", "Открывать меню при старте"),
+            ("csgo_windowed_overlay", "overlay_csgo_windowed_overlay", "Запускать в окне без рамки"),
+            ("csgo_dark_sky", "overlay_csgo_dark_sky", "Тёмное небо · локальная практика"),
+            ("csgo_hide_sky", "overlay_csgo_hide_sky", "Скрыть небо · локальная практика"),
+        )
+        for source_name, overlay_name, label in overlay_options:
+            source = getattr(self, source_name)
+            control = QCheckBox(label)
+            control.setAccessibleName(label)
+            setattr(self, overlay_name, control)
+            control.setChecked(source.isChecked())
+            source.stateChanged.connect(lambda state, target=control: target.setChecked(bool(state)))
+            control.stateChanged.connect(lambda state, target=source: target.setChecked(bool(state)))
+            layout.addWidget(control)
         apply_cfg = QPushButton("Сохранить игровой профиль и создать backup")
+        apply_cfg.setObjectName("primary")
         apply_cfg.clicked.connect(self.write_csgo_profile)
         layout.addWidget(apply_cfg)
-        self.csgo_profile_status = QLabel("Настрой профиль и нажми «Запустить игру»: FrameForge сохранит CFG с backup и попросит Steam запустить CS:GO Legacy. Для проверки прироста сравни одинаковую сцену до и после.")
-        self.csgo_profile_status.setObjectName("muted")
-        self.csgo_profile_status.setWordWrap(True)
-        layout.addWidget(self.csgo_profile_status)
-        optimizer = QPushButton("Настроить Skyrim с предпросмотром и backup")
-        optimizer.clicked.connect(lambda: self._open_overlay_page(3))
-        layout.addWidget(optimizer)
+        self.overlay_status = QLabel(self.csgo_profile_status.text())
+        self.overlay_status.setObjectName("muted")
+        self.overlay_status.setWordWrap(True)
+        layout.addWidget(self.overlay_status)
+        scroll.setWidget(body)
+        outer.addWidget(scroll)
         return overlay
+
+    @staticmethod
+    def _bind_overlay_combo(source: QComboBox, overlay: QComboBox) -> None:
+        data = source.currentData()
+        overlay.setCurrentIndex(max(0, overlay.findData(data)))
+        source.currentIndexChanged.connect(
+            lambda *_: overlay.setCurrentIndex(max(0, overlay.findData(source.currentData())))
+        )
+        overlay.currentIndexChanged.connect(
+            lambda *_: source.setCurrentIndex(max(0, source.findData(overlay.currentData())))
+        )
 
     def choose_csgo_cfg(self):
         selected = QFileDialog.getExistingDirectory(self, "Выбрать папку CS:GO Legacy csgo/cfg")
@@ -261,6 +318,8 @@ class MainWindow(QMainWindow):
             return
         self.csgo_cfg_dir = folder
         self.csgo_cfg_label.setText(str(folder))
+        if hasattr(self, "overlay_cfg_path"):
+            self.overlay_cfg_path.setText(str(folder))
 
     def write_csgo_profile(self) -> bool:
         folder = self.csgo_cfg_dir
@@ -341,6 +400,8 @@ class MainWindow(QMainWindow):
                 temporary.write_text(contents, encoding="utf-8", newline="\n")
                 os.replace(temporary, destination)
             self.csgo_profile_status.setText("Создано: " + ", ".join(path.name for path in files) + (" · backup: " + ", ".join(backups) if backups else " · существующие пользовательские файлы не затронуты"))
+            if hasattr(self, "overlay_status"):
+                self.overlay_status.setText(self.csgo_profile_status.text())
             return True
         except OSError as exc:
             QMessageBox.critical(self, "Не удалось записать конфиг", str(exc))
@@ -390,40 +451,117 @@ class MainWindow(QMainWindow):
         if not self.write_csgo_profile():
             return
         try:
-            self._start_csgo_via_steam()
+            self._start_csgo_via_steam(self.csgo_windowed_overlay.isChecked())
         except OSError as exc:
             QMessageBox.critical(self, "Не удалось запустить игру", f"Профиль сохранён, но запуск через Steam не удался: {exc}")
             return
         startup_message = "Меню настроено на автозагрузку; " if self.csgo_startup_menu.isChecked() else "Автозагрузка меню отключена; "
-        self.csgo_profile_status.setText("Профиль сохранён, игра передана Steam. " + startup_message + "фактический запуск и FPS нужно проверить в игре.")
+        display_message = "Запросил оконный режим без рамки для панели; " if self.csgo_windowed_overlay.isChecked() else "Запустил в выбранном режиме; "
+        self.csgo_profile_status.setText("Профиль сохранён, игра передана Steam. " + display_message + startup_message + "прирост FPS проверяй одинаковым замером до и после.")
+        if hasattr(self, "overlay_status"):
+            self.overlay_status.setText(self.csgo_profile_status.text())
+        self._show_game_overlay(activate_game=True)
         self.hide()
 
     @staticmethod
-    def _start_csgo_via_steam() -> None:
+    def _csgo_launch_arguments(windowed_overlay: bool) -> list[str]:
+        arguments = ["-applaunch", "4465480"]
+        if windowed_overlay:
+            arguments.extend(("-windowed", "-noborder"))
+        return arguments
+
+    @staticmethod
+    def _start_csgo_via_steam(windowed_overlay: bool = True) -> None:
         steam = shutil.which("steam")
         if steam:
-            subprocess.Popen([steam, "-applaunch", "4465480"])
-        elif not QDesktopServices.openUrl(QUrl("steam://run/4465480")):
+            subprocess.Popen([steam, *MainWindow._csgo_launch_arguments(windowed_overlay)])
+        else:
+            options = "//-windowed%20-noborder" if windowed_overlay else ""
+            if QDesktopServices.openUrl(QUrl(f"steam://run/4465480{options}")):
+                return
             raise OSError("Не удалось передать ссылку Steam для запуска CS:GO Legacy")
 
     def _open_overlay_page(self, page: int):
+        self._hide_game_overlay()
         self.show_page(page)
         self.showNormal()
         self.raise_()
         self.activateWindow()
-        self.game_overlay.hide()
 
-    def _show_game_overlay(self):
+    def _show_game_overlay(self, activate_game: bool = False):
         if not hasattr(self, "game_overlay"):
             return
-        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-        if screen:
-            area = screen.availableGeometry()
-            self.game_overlay.adjustSize()
-            self.game_overlay.move(area.right() - self.game_overlay.width() - 16, area.top() + 48)
-        self.game_overlay.show()
-        self.game_overlay.raise_()
-        self.game_overlay.activateWindow()
+        self._overlay_tracking = True
+        self._overlay_activate_pending_until = time.monotonic() + 60 if activate_game else 0
+        if activate_game:
+            self.overlay_status.setText("Ожидаю окно CS:GO Legacy — панель появится поверх игры.")
+        else:
+            game_window = find_csgo_window()
+            if game_window is None:
+                self.overlay_status.setText("CS:GO Legacy не найден. Запусти игру кнопкой выше, чтобы открыть панель поверх неё.")
+                self._overlay_tracking = False
+                return
+            self._csgo_overlay_hwnd = game_window.handle
+            self._overlay_activate_pending_until = time.monotonic() + 5
+            activate_window(game_window.handle)
+        self._overlay_next_search_at = 0.0
+        self._overlay_timer.start()
+        self._update_game_overlay()
+
+    def _hide_game_overlay(self):
+        self._overlay_tracking = False
+        self._overlay_activate_pending_until = 0
+        self._overlay_next_search_at = 0.0
+        if hasattr(self, "_overlay_timer"):
+            self._overlay_timer.stop()
+        if hasattr(self, "game_overlay"):
+            self.game_overlay.hide()
+        self._overlay_last_geometry = None
+
+    def _update_game_overlay(self):
+        if not self._overlay_tracking:
+            self.game_overlay.hide()
+            return
+        foreground = foreground_window_handle()
+        overlay_handle = int(self.game_overlay.winId())
+        if foreground == overlay_handle and self._csgo_overlay_hwnd:
+            game_window = get_csgo_window(self._csgo_overlay_hwnd)
+        else:
+            game_window = get_csgo_window(foreground) if foreground else None
+        now = time.monotonic()
+        if game_window is None and now < self._overlay_activate_pending_until and now >= self._overlay_next_search_at:
+            self._overlay_next_search_at = now + 1.0
+            game_window = find_csgo_window()
+            if game_window is not None:
+                self._csgo_overlay_hwnd = game_window.handle
+                activate_window(game_window.handle)
+                return
+        if game_window is None:
+            self.game_overlay.hide()
+            self._overlay_last_geometry = None
+            return
+        self._csgo_overlay_hwnd = game_window.handle
+        self._overlay_activate_pending_until = 0
+        if foreground not in (game_window.handle, overlay_handle):
+            self.game_overlay.hide()
+            self._overlay_last_geometry = None
+            return
+        self.game_overlay.adjustSize()
+        panel_width = min(430, max(300, self.game_overlay.sizeHint().width()))
+        panel_height = self.game_overlay.sizeHint().height()
+        geometry = place_overlay(game_window.bounds, (panel_width, panel_height), margin=16)
+        if geometry is None:
+            self.game_overlay.hide()
+            self._overlay_last_geometry = None
+            return
+        x, y, width, height = geometry
+        self.game_overlay.setGeometry(x, y, width, height)
+        if not self.game_overlay.isVisible():
+            self.game_overlay.show()
+            self.game_overlay.raise_()
+        if geometry != self._overlay_last_geometry:
+            position_overlay_window(overlay_handle, geometry)
+            self._overlay_last_geometry = geometry
 
     def _open_overlay_benchmark(self):
         game = self.overlay_game.currentText()
@@ -487,6 +625,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(f"""
             QWidget {{ background:{BG}; color:{TEXT}; font-family:'Segoe UI'; font-size:10pt; }}
             #sidebar {{ background:{PANEL}; border:1px solid #26354e; border-radius:16px; }}
+            QDialog#gameOverlay {{ background:{PANEL}; border:1px solid {ACCENT}; border-radius:14px; }}
             #brand {{ color:{TEXT}; font-size:20pt; font-weight:800; letter-spacing:1px; }}
             #tagline {{ color:{ACCENT}; font-size:8pt; font-weight:700; }}
             #pageTitle {{ font-size:20pt; font-weight:700; padding:8px 0; }}
@@ -581,7 +720,13 @@ class MainWindow(QMainWindow):
         csgo_launch.setObjectName("primary")
         csgo_launch.clicked.connect(self.launch_csgo_legacy)
         csgo_row.addWidget(csgo_launch)
+        open_game_panel = QPushButton("Открыть меню FrameForge поверх CS:GO Legacy")
+        open_game_panel.clicked.connect(self._show_game_overlay)
+        csgo_row.addWidget(open_game_panel)
         layout.addLayout(csgo_row)
+        self.csgo_windowed_overlay = QCheckBox("Оконный режим без рамки для панели FrameForge поверх игры")
+        self.csgo_windowed_overlay.setChecked(True)
+        layout.addWidget(self.csgo_windowed_overlay)
         cfg_row = QHBoxLayout()
         self.csgo_cfg_label = QLabel(str(self.csgo_cfg_dir) if self.csgo_cfg_dir else "Папка csgo/cfg не выбрана")
         self.csgo_cfg_label.setObjectName("muted")
@@ -2204,11 +2349,13 @@ def run_app():
     tray.setToolTip("FrameForge · игровые профили и FPS-бенчмарк")
     menu = QMenu()
     open_panel = menu.addAction("Открыть профили игр")
+    game_overlay = menu.addAction("Показать панель поверх CS:GO Legacy")
     show_main = menu.addAction("Открыть FrameForge")
     menu.addSeparator()
     quit_action = menu.addAction("Выход")
     tray.setContextMenu(menu)
     open_panel.triggered.connect(lambda: (window.show_page(1), window.showNormal(), window.raise_(), window.activateWindow()))
+    game_overlay.triggered.connect(window._show_game_overlay)
     show_main.triggered.connect(lambda: (window.showNormal(), window.raise_(), window.activateWindow()))
     quit_action.triggered.connect(application.quit)
     tray.activated.connect(lambda reason: (window.show_page(1), window.showNormal(), window.raise_(), window.activateWindow()) if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick) else None)

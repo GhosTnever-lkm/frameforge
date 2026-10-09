@@ -6,6 +6,15 @@ from frameforge.ui.main_window import MainWindow
 
 
 class CsgoProfileTests(unittest.TestCase):
+    def test_launch_uses_borderless_window_for_interactive_overlay(self):
+        self.assertEqual(
+            MainWindow._csgo_launch_arguments(True),
+            ["-applaunch", "4465480", "-windowed", "-noborder"],
+        )
+
+    def test_launch_can_preserve_existing_display_mode(self):
+        self.assertEqual(MainWindow._csgo_launch_arguments(False), ["-applaunch", "4465480"])
+
     def test_autoexec_adds_managed_menu_without_replacing_user_lines(self):
         result = MainWindow._build_csgo_managed_autoexec("// user config\nexec personal", True)
         self.assertIn("// user config", result)
