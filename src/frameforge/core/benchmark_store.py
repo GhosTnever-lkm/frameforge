@@ -8,22 +8,23 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..catalog import GUIDE_CHECKLISTS
-from .benchmark import Benchmark, FRAME_TIME_BUCKET_EDGES_MS, MAX_CHANGE_NOTE_CHARS, MAX_SAMPLES, METRIC_KINDS, FrameTimingSummary, PRESENTMON_FRAME_TIMING_COLUMNS
+from .benchmark import Benchmark, FRAME_BUDGET_FPS_PRESETS, FRAME_TIME_BUCKET_EDGES_MS, MAX_CHANGE_NOTE_CHARS, MAX_SAMPLES, METRIC_KINDS, FrameTimingSummary, PRESENTMON_FRAME_TIMING_COLUMNS
 from .profiles import TUNING_PROFILES
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 LEGACY_SCHEMA_VERSION = 1
 LABEL_SCHEMA_VERSION = 2
 METRIC_SCHEMA_VERSION = 3
 NOTE_SCHEMA_VERSION = 4
 SETTING_SNAPSHOT_SCHEMA_VERSION = 5
 FRAME_TIMING_SCHEMA_VERSION = 7
+FRAME_BUDGET_SCHEMA_VERSION = 8
 ALLOWED_SETTING_KEYS = frozenset(profile.setting for profile in TUNING_PROFILES)
 MAX_HISTORY = 100
 MAX_STORE_BYTES = 2 * 1024 * 1024
 _FIELDS = {
     "name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "sample_count", "average_fps", "one_percent_low_fps",
-    "p99_frame_time_ms", "median_frame_time_ms", "min_frame_time_ms", "frame_timing",
+    "p99_frame_time_ms", "median_frame_time_ms", "min_frame_time_ms", "frame_timing", "frame_budget_counts",
     "max_frame_time_ms", "frame_time_buckets",
 }
 
@@ -40,6 +41,7 @@ def _validate_benchmark(value: object) -> Benchmark:
     setting_value = value["setting_value"]
     manual_changes = value["manual_changes"]
     frame_timing = value["frame_timing"]
+    frame_budget_counts = value["frame_budget_counts"]
     count = value["sample_count"]
     if not isinstance(name, str) or not name or len(name) > 255 or "/" in name or "\\" in name:
         raise ValueError("Имя замера в истории некорректно.")
@@ -101,7 +103,15 @@ def _validate_benchmark(value: object) -> Benchmark:
             raise ValueError("Значения дополнительного счётчика времени кадра в истории некорректны.")
         seen_metrics.add(metric_id)
         summaries.append(FrameTimingSummary(metric_id, valid_count, median_ms, p95_ms))
-    numeric_fields = _FIELDS - {"name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "frame_timing", "sample_count", "frame_time_buckets"}
+    if frame_budget_counts is not None:
+        if (
+            not isinstance(frame_budget_counts, (list, tuple))
+            or len(frame_budget_counts) != len(FRAME_BUDGET_FPS_PRESETS)
+            or any(isinstance(item, bool) or not isinstance(item, int) or not 0 <= item <= count for item in frame_budget_counts)
+            or any(left < right for left, right in zip(frame_budget_counts, frame_budget_counts[1:]))
+        ):
+            raise ValueError("Счётчики Frame budget в истории некорректны.")
+    numeric_fields = _FIELDS - {"name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "frame_timing", "frame_budget_counts", "sample_count", "frame_time_buckets"}
     for field in numeric_fields:
         item = value[field]
         if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) or item <= 0:
@@ -139,6 +149,7 @@ def _validate_benchmark(value: object) -> Benchmark:
         max_frame_time_ms=float(value["max_frame_time_ms"]),
         frame_time_buckets=tuple(buckets),
         frame_timing=tuple(summaries),
+        frame_budget_counts=None if frame_budget_counts is None else tuple(frame_budget_counts),
     )
 
 
@@ -182,13 +193,21 @@ class BenchmarkStore:
                     base.setdefault("manual_changes", [])
                 if version < FRAME_TIMING_SCHEMA_VERSION:
                     base.setdefault("frame_timing", [])
+                if version < FRAME_BUDGET_SCHEMA_VERSION:
+                    # Old aggregates cannot be reprocessed: their raw frame times were never stored.
+                    base["frame_budget_counts"] = None
                 migrated.append(_validate_benchmark(base))
             return migrated
         return [_validate_benchmark(row) for row in rows]
 
     def save(self, runs: list[Benchmark]) -> None:
         clean = [_validate_benchmark(asdict(run) | {"frame_time_buckets": list(run.frame_time_buckets)}) for run in runs[-MAX_HISTORY:]]
-        stored_runs = [asdict(run) | {"frame_time_buckets": list(run.frame_time_buckets)} for run in clean]
+        stored_runs = [
+            asdict(run)
+            | {"frame_time_buckets": list(run.frame_time_buckets)}
+            | {"frame_budget_counts": None if run.frame_budget_counts is None else list(run.frame_budget_counts)}
+            for run in clean
+        ]
         document = {
             "schema_version": SCHEMA_VERSION,
             "runs": stored_runs,

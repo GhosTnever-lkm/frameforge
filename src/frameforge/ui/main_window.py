@@ -18,7 +18,8 @@ from .. import __version__
 from ..catalog import GUIDE, GUIDE_CHECKLISTS, GUIDE_CHECKLIST_LABELS, GUIDE_GAMES, GUIDES, GAMES
 from ..core.apply import apply_profile_setting, build_profile_bytes, make_diff, read_profile_setting
 from ..core.benchmark import (
-    Benchmark, METRIC_LABELS, compare_benchmark_groups, compare_benchmarks,
+    Benchmark, FRAME_BUDGET_FPS_PRESETS, METRIC_LABELS, compare_benchmark_groups, compare_benchmarks,
+    format_budget_threshold_label,
     export_comparison_csv, export_comparison_json, export_group_comparison_csv,
     export_group_comparison_json, load_benchmark_csv,
 )
@@ -400,6 +401,19 @@ class MainWindow(QMainWindow):
         self.benchmark_groups_status = QLabel("Группа A: 0 · Группа B: 0")
         self.benchmark_groups_status.setObjectName("tagline")
         layout.addWidget(self.benchmark_groups_status)
+        budget_row = QHBoxLayout()
+        budget_row.addWidget(QLabel("Frame budget:"))
+        self.benchmark_frame_budget = QComboBox()
+        for fps in FRAME_BUDGET_FPS_PRESETS:
+            self.benchmark_frame_budget.addItem(f"{fps} FPS — {format_budget_threshold_label(fps)}", fps)
+        self.benchmark_frame_budget.setCurrentIndex(FRAME_BUDGET_FPS_PRESETS.index(60))
+        self.benchmark_frame_budget.setToolTip("Доля принятых кадров, время которых не превышает 1000/FPS. Для старой истории это значение недоступно.")
+        self.benchmark_frame_budget.currentIndexChanged.connect(self._refresh_benchmark_budget)
+        budget_row.addWidget(self.benchmark_frame_budget)
+        budget_hint = QLabel("Доля принятых кадров ≤ выбранному времени; не оценка плавности")
+        budget_hint.setObjectName("muted")
+        budget_row.addWidget(budget_hint, 1)
+        layout.addLayout(budget_row)
         self.compare_groups_button = QPushButton("Сравнить повторные замеры A/B")
         self.compare_groups_button.clicked.connect(self.compare_benchmark_groups_selection)
         layout.addWidget(self.compare_groups_button)
@@ -476,6 +490,8 @@ class MainWindow(QMainWindow):
                 frame_time_buckets=run.frame_time_buckets,
                 metric_kind=run.metric_kind,
                 change_note=self.benchmark_change_note.text().strip(),
+                frame_timing=run.frame_timing,
+                frame_budget_counts=run.frame_budget_counts,
                 setting_key=setting_key,
                 setting_value=setting_value,
                 manual_changes=tuple(
@@ -558,7 +574,7 @@ class MainWindow(QMainWindow):
         if selection is None:
             return
         before, after = selection
-        self.benchmark_report.setPlainText(compare_benchmarks(before, after))
+        self.benchmark_report.setPlainText(compare_benchmarks(before, after, self.benchmark_frame_budget.currentData()))
         self.benchmark_chart.set_runs(before, after)
         self.benchmark_chart_title.show()
         self.benchmark_chart.show()
@@ -592,7 +608,7 @@ class MainWindow(QMainWindow):
         group_a = [run for run in self.benchmark_runs if id(run) in self._benchmark_group_a]
         group_b = [run for run in self.benchmark_runs if id(run) in self._benchmark_group_b]
         try:
-            report = compare_benchmark_groups(group_a, group_b)
+            report = compare_benchmark_groups(group_a, group_b, self.benchmark_frame_budget.currentData())
         except ValueError as exc:
             QMessageBox.information(self, "Не удалось сравнить группы", str(exc))
             return
@@ -602,6 +618,18 @@ class MainWindow(QMainWindow):
         self.benchmark_chart_note.hide()
         self._last_benchmark_comparison = ("groups", group_a, group_b)
         self.export_benchmark_button.setEnabled(True)
+
+    def _refresh_benchmark_budget(self, *_args):
+        comparison = self._last_benchmark_comparison
+        if comparison is None or not hasattr(self, "benchmark_frame_budget"):
+            return
+        target_fps = self.benchmark_frame_budget.currentData()
+        if comparison[0] == "pair":
+            _kind, before, after = comparison
+            self.benchmark_report.setPlainText(compare_benchmarks(before, after, target_fps))
+        else:
+            _kind, group_a, group_b = comparison
+            self.benchmark_report.setPlainText(compare_benchmark_groups(group_a, group_b, target_fps))
 
     def _selected_benchmark_pair(self) -> tuple[Benchmark, Benchmark] | None:
         if self.benchmark_before.count() < 2:
@@ -637,10 +665,10 @@ class MainWindow(QMainWindow):
         try:
             if comparison[0] == "groups":
                 _kind, group_a, group_b = comparison
-                payload = export_group_comparison_json(group_a, group_b) if want_json else export_group_comparison_csv(group_a, group_b)
+                payload = export_group_comparison_json(group_a, group_b, self.benchmark_frame_budget.currentData()) if want_json else export_group_comparison_csv(group_a, group_b, self.benchmark_frame_budget.currentData())
             else:
                 _kind, before, after = comparison
-                payload = export_comparison_json(before, after) if want_json else export_comparison_csv(before, after)
+                payload = export_comparison_json(before, after, self.benchmark_frame_budget.currentData()) if want_json else export_comparison_csv(before, after, self.benchmark_frame_budget.currentData())
             target.write_text(payload, encoding="utf-8-sig" if not want_json else "utf-8", newline="")
         except OSError as exc:
             QMessageBox.critical(self, "Не удалось экспортировать", f"Сводка не сохранена.\n{exc}")

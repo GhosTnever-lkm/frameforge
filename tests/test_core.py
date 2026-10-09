@@ -12,10 +12,10 @@ from unittest.mock import patch
 from frameforge.core.apply import apply_grass_distance, apply_profile_setting, build_profile_bytes, build_tuned_bytes, make_diff, read_grass_distance, read_profile_setting
 from frameforge.core.backup import create_byte_backup, restore_from_backup
 from frameforge.core.benchmark import (
-    Benchmark, FrameTimingSummary, FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks,
-    compare_benchmark_groups, export_comparison_csv, export_comparison_json,
+    Benchmark, FrameTimingSummary, FRAME_BUDGET_FPS_PRESETS, FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks,
+    compare_benchmark_groups, export_comparison_csv, export_comparison_json, format_budget_threshold_label,
     export_group_comparison_csv, export_group_comparison_json, load_benchmark_csv,
-    load_frame_time_csv, summarize_benchmark_group,
+    frame_budget_share, load_frame_time_csv, summarize_benchmark_group,
 )
 from frameforge.core.benchmark_store import BenchmarkStore, MAX_HISTORY, SCHEMA_VERSION
 from frameforge.core.safety import SafetyError, get_documents_root, validate_config_path
@@ -631,7 +631,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertNotIn("private-a.csv", report)
         run_rows = [line for line in report.splitlines() if line.startswith("  ") and line.split("|")[0].strip().isdigit()]
         self.assertEqual(len(run_rows), 6)
-        self.assertIn("  2 | 10 | 50.00 | 50.00 | 20.00", run_rows)
+        self.assertTrue(any(row.startswith("  2 | 10 | 50.00 | 50.00 | 20.00 | ") for row in run_rows))
         self.assertEqual(report, compare_benchmark_groups(group_a, group_b))
 
     def test_repeated_group_requires_three_runs_and_matching_context(self):
@@ -687,7 +687,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertIn("frame_time_metric_kind", csv_export)
         self.assertIn("frame_time_bucket_5_share", csv_export)
         data = json.loads(json_export)
-        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(data["schema_version"], 3)
         self.assertEqual(data["baseline_a"]["frame_time_metric_kind"], "generic")
         self.assertEqual(data["baseline_a"]["frame_time_bucket_counts"], list(before.frame_time_buckets))
         self.assertEqual(data["variant_b"]["sample_count"], 3)
@@ -742,8 +742,102 @@ class FrameForgeCoreTests(unittest.TestCase):
         store.save([run])
         self.assertEqual(store.load(), [run])
         raw = json.loads(store.path.read_text(encoding="utf-8"))
-        self.assertEqual(raw["schema_version"], 7)
+        self.assertEqual(raw["schema_version"], 8)
         self.assertEqual(raw["runs"][0]["frame_timing"][1]["metric_id"], "gpu_busy")
+        self.assertEqual(raw["runs"][0]["frame_budget_counts"], list(run.frame_budget_counts))
+
+    def test_frame_budget_counts_follow_exact_inclusive_thresholds_without_raw_frames(self):
+        exact_60_budget = 1000.0 / 60
+        run = analyze_frame_times("budget.csv", [8.0, exact_60_budget, exact_60_budget + 0.001])
+        self.assertEqual(len(run.frame_budget_counts), len(FRAME_BUDGET_FPS_PRESETS))
+        self.assertEqual(run.frame_budget_counts[FRAME_BUDGET_FPS_PRESETS.index(60)], 2)
+        self.assertEqual(run.frame_budget_counts[FRAME_BUDGET_FPS_PRESETS.index(120)], 1)
+        self.assertEqual(frame_budget_share(run, 60), 200 / 3)
+        self.assertEqual(tuple(sorted(run.frame_budget_counts, reverse=True)), run.frame_budget_counts)
+        self.assertNotIn("frame_times_ms", run.__dict__)
+        fastest = analyze_frame_times("fast.csv", [3.0] * 100)
+        slowest = analyze_frame_times("slow.csv", [100.0] * 100)
+        self.assertEqual(fastest.frame_budget_counts, (100,) * len(FRAME_BUDGET_FPS_PRESETS))
+        self.assertEqual(slowest.frame_budget_counts, (0,) * len(FRAME_BUDGET_FPS_PRESETS))
+        store = BenchmarkStore(Path(self.temp.name) / "equal-counts.json")
+        store.save([fastest, slowest])
+        self.assertEqual(store.load(), [fastest, slowest])
+        with self.assertRaises(ValueError):
+            frame_budget_share(run, 100)
+
+    def test_frame_budget_threshold_label_shows_fraction_and_marks_decimal_approximate(self):
+        label = format_budget_threshold_label(60)
+        self.assertEqual(label, "≤ 1000/60 мс (≈ 16.666667 мс)")
+        self.assertNotIn("≤ 16.667 мс", label)
+        for fps in FRAME_BUDGET_FPS_PRESETS:
+            self.assertIn(f"1000/{fps}", format_budget_threshold_label(fps))
+        for fps in (0, -1, 100):
+            with self.subTest(fps=fps), self.assertRaises(ValueError):
+                format_budget_threshold_label(fps)
+
+    def test_benchmark_history_rejects_invalid_frame_budget_counts(self):
+        store = BenchmarkStore(Path(self.temp.name) / "invalid-budget.json")
+        base = analyze_frame_times("run.csv", [10, 20, 30])
+        invalid_counts = (
+            (1,),
+            tuple([True] + list(base.frame_budget_counts[1:])),
+            tuple([4] + list(base.frame_budget_counts[1:])),
+            tuple([0, 1] + list(base.frame_budget_counts[2:])),  # higher FPS cannot include more frames
+        )
+        for counts in invalid_counts:
+            with self.subTest(counts=counts), self.assertRaisesRegex(ValueError, "Frame budget"):
+                store.save([Benchmark(**(base.__dict__ | {"frame_budget_counts": counts}))])
+
+    def test_benchmark_history_v7_migrates_frame_budget_as_unavailable(self):
+        path = Path(self.temp.name) / "benchmarks-v7.json"
+        run = analyze_frame_times("old.csv", [10, 12])
+        row = run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets), "frame_timing": []}
+        row.pop("frame_budget_counts")
+        path.write_text(json.dumps({"schema_version": 7, "runs": [row]}), encoding="utf-8")
+        store = BenchmarkStore(path)
+        loaded = store.load()[0]
+        self.assertIsNone(loaded.frame_budget_counts)
+        report = compare_benchmarks(loaded, run, 60)
+        self.assertIn("нет данных (замер импортирован в старой версии", report)
+        self.assertNotIn("A: 0.0%", report)
+        store.save([loaded])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 8)
+        self.assertIsNone(store.load()[0].frame_budget_counts)
+
+    def test_frame_budget_group_uses_median_of_per_csv_percentages(self):
+        runs_a = [analyze_frame_times(f"a-{index}.csv", values) for index, values in enumerate(([10] * 10, [10] * 5 + [20] * 5, [20] * 10))]
+        runs_a = [Benchmark(**(run.__dict__ | {"game": "Game", "scene": "Scene"})) for run in runs_a]
+        summary = summarize_benchmark_group(runs_a, 60)
+        self.assertEqual(summary["frame_budget_within_pct"]["median"], 50.0)
+        group_report = compare_benchmark_groups(runs_a, runs_a[:0] + [
+            Benchmark(**(analyze_frame_times(f"b-{i}.csv", values).__dict__ | {"game": "Game", "scene": "Scene"}))
+            for i, values in enumerate(([12] * 10, [18] * 10, [10] * 5 + [20] * 5))
+        ], 60)
+        self.assertIn("Доля принятых кадров в бюджете 60 FPS", group_report)
+        self.assertIn("в бюджете (%)", group_report)
+        legacy_group_a = [Benchmark(**(run.__dict__ | {"frame_budget_counts": None})) for run in runs_a]
+        mixed_group_a = [Benchmark(**(run.__dict__ | {"frame_budget_counts": None if index == 0 else run.frame_budget_counts})) for index, run in enumerate(runs_a)]
+        mixed_group_b = [Benchmark(**run.__dict__) for run in runs_a]
+        mixed_report = compare_benchmark_groups(mixed_group_a, mixed_group_b, 60)
+        self.assertIn("группа A — 2/3 CSV; группа B — 3/3 CSV", mixed_report)
+        self.assertIn("Сводка групп недоступна", mixed_report)
+        json_export = json.loads(export_group_comparison_json(legacy_group_a, runs_a, 60))
+        self.assertEqual(json_export["frame_budget_available"], {"baseline_a": False, "variant_b": True})
+        self.assertEqual(json_export["frame_budget_available_run_count"], {"baseline_a": 0, "variant_b": 3})
+        self.assertNotIn("frame_budget_within_pct", json_export["baseline_a"]["metrics"])
+        csv_rows = list(csv.DictReader(io.StringIO(export_group_comparison_csv(legacy_group_a, runs_a, 60).lstrip("\ufeff"))))
+        available = next(row for row in csv_rows if row["metric"] == "frame_budget_available")
+        self.assertEqual((available["group_a_median"], available["group_b_median"]), ("0", "1"))
+
+    def test_frame_budget_comparison_exports_include_target_but_not_source_names(self):
+        before = analyze_frame_times("C:\\private\\before.csv", [10, 20])
+        after = analyze_frame_times("D:\\secret\\after.csv", [8, 30])
+        payload = json.loads(export_comparison_json(before, after, 60))
+        self.assertEqual(payload["frame_budget_target_fps"], 60)
+        self.assertEqual(payload["baseline_a"]["frame_budget_within_share"], 0.5)
+        self.assertEqual(payload["variant_b"]["frame_budget_within_share"], 0.5)
+        self.assertNotIn("before.csv", json.dumps(payload))
+        self.assertIn("frame_budget_target_fps", export_comparison_csv(before, after, 60))
 
     def test_benchmark_history_v6_migrates_with_empty_frame_timing(self):
         path = Path(self.temp.name) / "benchmarks-v6.json"
@@ -754,7 +848,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         loaded = store.load()
         self.assertEqual(loaded[0].frame_timing, ())
         store.save(loaded)
-        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 7)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 8)
 
     def test_benchmark_history_rejects_invalid_frame_timing_summaries(self):
         store = BenchmarkStore(Path(self.temp.name) / "benchmarks-invalid-timing.json")

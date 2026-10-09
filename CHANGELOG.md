@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0 - 2026-10-09
+
+- Add cross-game frame-budget comparisons for 30/60/90/120/144/165/240 FPS, using counts of accepted frames at or below each exact `1000/FPS` threshold.
+- Store only seven aggregate counts per new benchmark; retain no raw frame times and mark pre-v1.2 history as unavailable rather than treating it as 0%.
+- Include the selected target and aggregate within-budget share in comparison reports and exports; group summaries use per-CSV percentages and keep exports aggregate-only.
+- Migrate benchmark history schemas v1-v7 to schema v8; preserve legacy records without fabricated frame-budget values.
+
 ## 1.1.0 - 2026-10-09
 
 - Summarize optional PresentMon CPU Busy, GPU Time and GPU Busy counters over accepted frametime rows; show median, p95 and per-counter coverage without bottleneck claims.

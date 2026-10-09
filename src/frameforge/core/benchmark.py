@@ -28,6 +28,7 @@ FRAME_TIME_BUCKET_EDGES_MS = (
     1000.0 / 20.0,
     1000.0 / 10.0,
 )
+FRAME_BUDGET_FPS_PRESETS = (30, 60, 90, 120, 144, 165, 240)
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,9 @@ class Benchmark:
     setting_value: int | None = None
     manual_changes: tuple[str, ...] = ()
     frame_timing: tuple[FrameTimingSummary, ...] = ()
+    # Counts only; raw per-frame samples are deliberately discarded after import.
+    # None means this run predates frame-budget summaries.
+    frame_budget_counts: tuple[int, ...] | None = None
 
 
 PRESENTMON_FRAME_TIMING_COLUMNS = {
@@ -100,6 +104,7 @@ def analyze_frame_times(
     buckets = [0] * (len(FRAME_TIME_BUCKET_EDGES_MS) + 1)
     for value in ordered:
         buckets[bisect_right(FRAME_TIME_BUCKET_EDGES_MS, value)] += 1
+    frame_budget_counts = tuple(bisect_right(ordered, 1000.0 / fps) for fps in FRAME_BUDGET_FPS_PRESETS)
     slow_count = max(1, math.ceil(len(ordered) * 0.01))
     slow_average = sum(ordered[-slow_count:]) / slow_count
     mean = sum(ordered) / len(ordered)
@@ -121,7 +126,31 @@ def analyze_frame_times(
         min_frame_time_ms=ordered[0],
         max_frame_time_ms=ordered[-1],
         frame_time_buckets=tuple(buckets),
+        frame_budget_counts=frame_budget_counts,
     )
+
+
+def frame_budget_ms_from_fps(target_fps: int) -> float:
+    """Return the exact threshold in milliseconds for a supported FPS preset."""
+    if isinstance(target_fps, bool) or not isinstance(target_fps, int) or target_fps not in FRAME_BUDGET_FPS_PRESETS:
+        raise ValueError("Выбери один из поддерживаемых бюджетов FPS.")
+    return 1000.0 / target_fps
+
+
+def format_budget_threshold_label(target_fps: int) -> str:
+    """Show the exact FPS fraction and mark its finite decimal as approximate."""
+    threshold_ms = frame_budget_ms_from_fps(target_fps)
+    approx_ms = f"{threshold_ms:.6f}".rstrip("0").rstrip(".")
+    return f"≤ 1000/{target_fps} мс (≈ {approx_ms} мс)"
+
+
+def frame_budget_share(run: Benchmark, target_fps: int) -> float | None:
+    """Return the percent of accepted frames at or below a preset frame budget."""
+    frame_budget_ms_from_fps(target_fps)
+    if run.frame_budget_counts is None:
+        return None
+    count = run.frame_budget_counts[FRAME_BUDGET_FPS_PRESETS.index(target_fps)]
+    return 100.0 * count / run.sample_count
 
 
 def load_frame_time_csv(path: Path) -> Benchmark:
@@ -332,7 +361,7 @@ def _format_frame_timing_comparison(before: Benchmark, after: Benchmark) -> str:
     return "\n".join(lines)
 
 
-def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
+def compare_benchmarks(before: Benchmark, after: Benchmark, target_fps: int = 60) -> str:
     fps_delta = after.average_fps - before.average_fps
     fps_percent = (fps_delta / before.average_fps * 100) if before.average_fps else 0.0
     low_delta = after.one_percent_low_fps - before.one_percent_low_fps
@@ -398,6 +427,14 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
         a_share = 100 * a_count / before.sample_count
         b_share = 100 * b_count / after.sample_count
         bucket_rows.append(f"  {label}: A {a_share:.1f}% → B {b_share:.1f}% ({b_share - a_share:+.1f} п.п.)")
+    budget_rows = []
+    for label, run in (("A", before), ("B", after)):
+        share = frame_budget_share(run, target_fps)
+        if share is None:
+            budget_rows.append(f"  {label}: нет данных (замер импортирован в старой версии FrameForge)")
+        else:
+            within = run.frame_budget_counts[FRAME_BUDGET_FPS_PRESETS.index(target_fps)]
+            budget_rows.append(f"  {label}: {share:.1f}% ({within:,}/{run.sample_count:,} кадров)")
     return (
         "Сравниваются две выборки; это само по себе не доказывает эффект настройки.\n"
         f"Метрика A: {METRIC_LABELS.get(before.metric_kind, before.metric_kind)}\n"
@@ -415,6 +452,9 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
         + sample_warning
         + "Доли кадров по времени кадра (меньше = короче кадр):\n"
         + "\n".join(bucket_rows)
+        + f"\n\nКадры в бюджете {target_fps} FPS ({format_budget_threshold_label(target_fps)}; доля принятых кадров):\n"
+        + "\n".join(budget_rows)
+        + f"\nFrame budget — не оценка воспринимаемой плавности и не подтверждение стабильных {target_fps} FPS.\n"
         + "\n\n"
         f"Разница среднего FPS: {fps_delta:+.1f} ({fps_percent:+.1f}%)\n"
         f"Разница 1% low: {low_delta:+.1f} FPS\n"
@@ -466,7 +506,7 @@ def _validate_benchmark_groups(group_a: list[Benchmark], group_b: list[Benchmark
         raise ValueError("Для сравнения повторов укажи одинаковые игру и сцену у каждого замера.")
 
 
-def summarize_benchmark_group(runs: list[Benchmark]) -> dict[str, dict[str, float]]:
+def summarize_benchmark_group(runs: list[Benchmark], target_fps: int = 60) -> dict[str, dict[str, float]]:
     """Summarize repeated per-CSV aggregate metrics; never pool raw frame samples."""
     _validate_benchmark_groups(runs)
     summary: dict[str, dict[str, float]] = {}
@@ -477,14 +517,22 @@ def summarize_benchmark_group(runs: list[Benchmark]) -> dict[str, dict[str, floa
             "q1": _quartile(values, 0.25),
             "q3": _quartile(values, 0.75),
         }
+    budget_shares = [frame_budget_share(run, target_fps) for run in runs]
+    if all(value is not None for value in budget_shares):
+        values = [float(value) for value in budget_shares]
+        summary["frame_budget_within_pct"] = {
+            "median": statistics.median(values),
+            "q1": _quartile(values, 0.25),
+            "q3": _quartile(values, 0.75),
+        }
     return summary
 
 
-def compare_benchmark_groups(group_a: list[Benchmark], group_b: list[Benchmark]) -> str:
+def compare_benchmark_groups(group_a: list[Benchmark], group_b: list[Benchmark], target_fps: int = 60) -> str:
     """Compare medians and run-to-run IQRs with an explicit descriptive-only caveat."""
     _validate_benchmark_groups(group_a, group_b)
-    summary_a = summarize_benchmark_group(group_a)
-    summary_b = summarize_benchmark_group(group_b)
+    summary_a = summarize_benchmark_group(group_a, target_fps)
+    summary_b = summarize_benchmark_group(group_b, target_fps)
     report = [
         f"Повторные замеры: A — {len(group_a)} CSV, B — {len(group_b)} CSV.",
         f"Условия по меткам: {group_a[0].game} · {group_a[0].scene} · {METRIC_LABELS.get(group_a[0].metric_kind, group_a[0].metric_kind)}.",
@@ -513,15 +561,32 @@ def compare_benchmark_groups(group_a: list[Benchmark], group_b: list[Benchmark])
             f"  Медиана B−A: {delta:+.2f} {unit}; диапазоны {'перекрываются' if overlap else 'не перекрываются'}.",
             "",
         ))
+    budget_a = summary_a.get("frame_budget_within_pct")
+    budget_b = summary_b.get("frame_budget_within_pct")
+    available_a = sum(run.frame_budget_counts is not None for run in group_a)
+    available_b = sum(run.frame_budget_counts is not None for run in group_b)
+    report.extend((f"Доля принятых кадров в бюджете {target_fps} FPS ({format_budget_threshold_label(target_fps)}):",))
+    report.append(f"Данные доступны: группа A — {available_a}/{len(group_a)} CSV; группа B — {available_b}/{len(group_b)} CSV.")
+    if budget_a is None or budget_b is None:
+        report.append("  Сводка групп недоступна: для неё нужны данные каждого CSV. Старые замеры не учитываются как 0%.")
+    else:
+        report.extend((
+            f"  A: медиана {budget_a['median']:.2f}%; IQR {budget_a['q1']:.2f}–{budget_a['q3']:.2f}%",
+            f"  B: медиана {budget_b['median']:.2f}%; IQR {budget_b['q1']:.2f}–{budget_b['q3']:.2f}%",
+            f"  Медиана B−A: {budget_b['median'] - budget_a['median']:+.2f} п.п.",
+        ))
+    report.extend(("Ограничение: доля в frame budget не описывает воспринимаемую плавность; одиночный длинный кадр может теряться в общей доле.", ""))
     for group_label, group in (("A", group_a), ("B", group_b)):
         report.extend((
             f"Отдельные прогоны группы {group_label} (агрегаты CSV, порядок следует истории замеров):",
-            "  № | n_frames | average FPS | 1% low FPS | p99 frametime (мс)",
+            "  № | n_frames | average FPS | 1% low FPS | p99 frametime (мс) | в бюджете (%)",
         ))
         for index, run in enumerate(group, start=1):
+            share = frame_budget_share(run, target_fps)
+            budget_text = "нет данных" if share is None else f"{share:.2f}"
             report.append(
                 f"  {index} | {run.sample_count} | {run.average_fps:.2f} | "
-                f"{run.one_percent_low_fps:.2f} | {run.p99_frame_time_ms:.2f}"
+                f"{run.one_percent_low_fps:.2f} | {run.p99_frame_time_ms:.2f} | {budget_text}"
             )
             report.extend(_format_frame_timing_run(run, f"  {group_label}{index}"))
         report.append("")
@@ -534,9 +599,9 @@ def compare_benchmark_groups(group_a: list[Benchmark], group_b: list[Benchmark])
     return "\n".join(report)
 
 
-def export_group_comparison_csv(group_a: list[Benchmark], group_b: list[Benchmark]) -> str:
+def export_group_comparison_csv(group_a: list[Benchmark], group_b: list[Benchmark], target_fps: int = 60) -> str:
     _validate_benchmark_groups(group_a, group_b)
-    summaries = (summarize_benchmark_group(group_a), summarize_benchmark_group(group_b))
+    summaries = (summarize_benchmark_group(group_a, target_fps), summarize_benchmark_group(group_b, target_fps))
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(("metric", "group_a_median", "group_a_q1", "group_a_q3", "group_b_median", "group_b_q1", "group_b_q3", "median_b_minus_a", "unit"))
@@ -544,25 +609,38 @@ def export_group_comparison_csv(group_a: list[Benchmark], group_b: list[Benchmar
         a, b = summaries
         writer.writerow((key, a[key]["median"], a[key]["q1"], a[key]["q3"], b[key]["median"], b[key]["q1"], b[key]["q3"], b[key]["median"] - a[key]["median"], unit))
     writer.writerow(("run_count", len(group_a), "", "", len(group_b), "", "", len(group_b) - len(group_a), "runs"))
+    writer.writerow(("frame_budget_target_fps", target_fps, "", "", "", "", "", "", "fps"))
+    budget_a = summaries[0].get("frame_budget_within_pct")
+    budget_b = summaries[1].get("frame_budget_within_pct")
+    writer.writerow(("frame_budget_available", int(budget_a is not None), "", "", int(budget_b is not None), "", "", "", "boolean"))
+    writer.writerow(("frame_budget_available_runs", sum(run.frame_budget_counts is not None for run in group_a), "", "", sum(run.frame_budget_counts is not None for run in group_b), "", "", "", "runs"))
+    if budget_a is not None and budget_b is not None:
+        writer.writerow(("frame_budget_within_pct", budget_a["median"], budget_a["q1"], budget_a["q3"], budget_b["median"], budget_b["q1"], budget_b["q3"], budget_b["median"] - budget_a["median"], "percent"))
     writer.writerow(("causal_claim", "", "", "", "", "", "", "not_established_by_repeated_runs", "note"))
     return "\ufeff" + output.getvalue()
 
 
-def export_group_comparison_json(group_a: list[Benchmark], group_b: list[Benchmark]) -> str:
+def export_group_comparison_json(group_a: list[Benchmark], group_b: list[Benchmark], target_fps: int = 60) -> str:
     _validate_benchmark_groups(group_a, group_b)
-    summary_a = summarize_benchmark_group(group_a)
-    summary_b = summarize_benchmark_group(group_b)
+    summary_a = summarize_benchmark_group(group_a, target_fps)
+    summary_b = summarize_benchmark_group(group_b, target_fps)
     return json.dumps({
-        "schema_version": 1,
+        "schema_version": 2,
         "method": "median_and_inclusive_iqr_of_per_csv_summaries",
         "baseline_a": {"run_count": len(group_a), "metrics": summary_a},
         "variant_b": {"run_count": len(group_b), "metrics": summary_b},
         "frame_time_metric_kind": group_a[0].metric_kind,
+        "frame_budget_target_fps": target_fps,
+        "frame_budget_available": {"baseline_a": "frame_budget_within_pct" in summary_a, "variant_b": "frame_budget_within_pct" in summary_b},
+        "frame_budget_available_run_count": {
+            "baseline_a": sum(run.frame_budget_counts is not None for run in group_a),
+            "variant_b": sum(run.frame_budget_counts is not None for run in group_b),
+        },
         "causal_claim": "not_established_by_repeated_runs",
     }, ensure_ascii=False, indent=2)
 
 
-def export_comparison_csv(before: Benchmark, after: Benchmark) -> str:
+def export_comparison_csv(before: Benchmark, after: Benchmark, target_fps: int = 60) -> str:
     """Export aggregate-only comparison rows; never include file paths or raw frames."""
     output = io.StringIO(newline="")
     writer = csv.writer(output)
@@ -578,6 +656,11 @@ def export_comparison_csv(before: Benchmark, after: Benchmark) -> str:
         ("max_frame_time_ms", before.max_frame_time_ms, after.max_frame_time_ms, after.max_frame_time_ms - before.max_frame_time_ms, "ms"),
     )
     writer.writerows(rows)
+    writer.writerow(("frame_budget_target_fps", target_fps, target_fps, 0, "fps"))
+    for label, run in (("baseline_a", before), ("variant_b", after)):
+        share = frame_budget_share(run, target_fps)
+        value = "" if share is None else share / 100.0
+        writer.writerow((f"{label}_frame_budget_within_share", value, value, "", "fraction"))
     for index, (a_count, b_count) in enumerate(zip(before.frame_time_buckets, after.frame_time_buckets)):
         a_share = a_count / before.sample_count
         b_share = b_count / after.sample_count
@@ -588,11 +671,12 @@ def export_comparison_csv(before: Benchmark, after: Benchmark) -> str:
     return output.getvalue()
 
 
-def export_comparison_json(before: Benchmark, after: Benchmark) -> str:
+def export_comparison_json(before: Benchmark, after: Benchmark, target_fps: int = 60) -> str:
     """Export machine-readable aggregate comparison without source names or paths."""
     return json.dumps(
         {
-            "schema_version": 2,
+            "schema_version": 3,
+            "frame_budget_target_fps": target_fps,
             "baseline_a": {
                 "frame_time_metric_kind": before.metric_kind,
                 "sample_count": before.sample_count,
@@ -603,6 +687,7 @@ def export_comparison_json(before: Benchmark, after: Benchmark) -> str:
                 "min_frame_time_ms": before.min_frame_time_ms,
                 "max_frame_time_ms": before.max_frame_time_ms,
                 "frame_time_bucket_counts": list(before.frame_time_buckets),
+                "frame_budget_within_share": None if frame_budget_share(before, target_fps) is None else frame_budget_share(before, target_fps) / 100.0,
             },
             "variant_b": {
                 "frame_time_metric_kind": after.metric_kind,
@@ -614,6 +699,7 @@ def export_comparison_json(before: Benchmark, after: Benchmark) -> str:
                 "min_frame_time_ms": after.min_frame_time_ms,
                 "max_frame_time_ms": after.max_frame_time_ms,
                 "frame_time_bucket_counts": list(after.frame_time_buckets),
+                "frame_budget_within_share": None if frame_budget_share(after, target_fps) is None else frame_budget_share(after, target_fps) / 100.0,
             },
             "sample_count_delta_ratio": abs(before.sample_count - after.sample_count) / max(before.sample_count, after.sample_count),
             "causal_claim": "not_established_by_two_runs",
