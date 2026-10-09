@@ -79,6 +79,11 @@ def _nearest_rank(values: list[float], percentile: float) -> float:
     return values[max(0, math.ceil(percentile * len(values)) - 1)]
 
 
+def frame_time_spread_ms(run: Benchmark) -> float:
+    """Return p99 minus median as a descriptive within-run tail spread."""
+    return max(0.0, run.p99_frame_time_ms - run.median_frame_time_ms)
+
+
 def analyze_frame_times(
     name: str,
     frame_times_ms: list[float],
@@ -366,6 +371,9 @@ def compare_benchmarks(before: Benchmark, after: Benchmark, target_fps: int = 60
     fps_percent = (fps_delta / before.average_fps * 100) if before.average_fps else 0.0
     low_delta = after.one_percent_low_fps - before.one_percent_low_fps
     p99_delta = after.p99_frame_time_ms - before.p99_frame_time_ms
+    spread_before = frame_time_spread_ms(before)
+    spread_after = frame_time_spread_ms(after)
+    spread_delta = spread_after - spread_before
     sample_delta = abs(before.sample_count - after.sample_count) / max(before.sample_count, after.sample_count)
     sample_warning = "⚠ Число кадров отличается более чем на 5%; сравнение распределений менее надёжно.\n\n" if sample_delta > 0.05 else ""
     context_warning = ""
@@ -449,6 +457,8 @@ def compare_benchmarks(before: Benchmark, after: Benchmark, target_fps: int = 60
         f"  Средний FPS: {before.average_fps:.1f} · 1% low: {before.one_percent_low_fps:.1f} · p99 frametime: {before.p99_frame_time_ms:.2f} ms\n\n"
         f"Variant (B): {after.name} ({after.sample_count:,} кадров)\n"
         f"  Средний FPS: {after.average_fps:.1f} · 1% low: {after.one_percent_low_fps:.1f} · p99 frametime: {after.p99_frame_time_ms:.2f} ms\n\n"
+        f"Разброс хвоста frametime (p99 − медиана): A {spread_before:.2f} → B {spread_after:.2f} ms ({spread_delta:+.2f} ms; меньше — уже хвост в этом прогоне)\n"
+        "Это описательная характеристика одной выборки, а не статистический тест и не гарантия плавности.\n\n"
         + sample_warning
         + "Доли кадров по времени кадра (меньше = короче кадр):\n"
         + "\n".join(bucket_rows)
@@ -466,7 +476,7 @@ def compare_benchmarks(before: Benchmark, after: Benchmark, target_fps: int = 60
 GROUP_METRICS = (
     ("average_fps", "Средний FPS по CSV", "FPS", True),
     ("one_percent_low_fps", "1% low по CSV", "FPS", True),
-    ("p99_frame_time_ms", "p99 frametime по CSV", "мс", False),
+        ("p99_frame_time_ms", "p99 frametime по CSV", "мс", False),
 )
 
 
@@ -653,6 +663,7 @@ def export_comparison_csv(before: Benchmark, after: Benchmark, target_fps: int =
         ("one_percent_low_fps", before.one_percent_low_fps, after.one_percent_low_fps, after.one_percent_low_fps - before.one_percent_low_fps, "fps"),
         ("median_frame_time_ms", before.median_frame_time_ms, after.median_frame_time_ms, after.median_frame_time_ms - before.median_frame_time_ms, "ms"),
         ("p99_frame_time_ms", before.p99_frame_time_ms, after.p99_frame_time_ms, after.p99_frame_time_ms - before.p99_frame_time_ms, "ms"),
+        ("p99_minus_median_frame_time_ms", frame_time_spread_ms(before), frame_time_spread_ms(after), frame_time_spread_ms(after) - frame_time_spread_ms(before), "ms"),
         ("min_frame_time_ms", before.min_frame_time_ms, after.min_frame_time_ms, after.min_frame_time_ms - before.min_frame_time_ms, "ms"),
         ("max_frame_time_ms", before.max_frame_time_ms, after.max_frame_time_ms, after.max_frame_time_ms - before.max_frame_time_ms, "ms"),
     )
@@ -676,7 +687,7 @@ def export_comparison_json(before: Benchmark, after: Benchmark, target_fps: int 
     """Export machine-readable aggregate comparison without source names or paths."""
     return json.dumps(
         {
-            "schema_version": 3,
+            "schema_version": 4,
             "frame_budget_target_fps": target_fps,
             "baseline_a": {
                 "frame_time_metric_kind": before.metric_kind,
@@ -685,6 +696,7 @@ def export_comparison_json(before: Benchmark, after: Benchmark, target_fps: int 
                 "one_percent_low_fps": before.one_percent_low_fps,
                 "median_frame_time_ms": before.median_frame_time_ms,
                 "p99_frame_time_ms": before.p99_frame_time_ms,
+                "p99_minus_median_frame_time_ms": frame_time_spread_ms(before),
                 "min_frame_time_ms": before.min_frame_time_ms,
                 "max_frame_time_ms": before.max_frame_time_ms,
                 "frame_time_bucket_counts": list(before.frame_time_buckets),
@@ -697,6 +709,7 @@ def export_comparison_json(before: Benchmark, after: Benchmark, target_fps: int 
                 "one_percent_low_fps": after.one_percent_low_fps,
                 "median_frame_time_ms": after.median_frame_time_ms,
                 "p99_frame_time_ms": after.p99_frame_time_ms,
+                "p99_minus_median_frame_time_ms": frame_time_spread_ms(after),
                 "min_frame_time_ms": after.min_frame_time_ms,
                 "max_frame_time_ms": after.max_frame_time_ms,
                 "frame_time_bucket_counts": list(after.frame_time_buckets),

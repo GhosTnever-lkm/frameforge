@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.0 - 2026-10-09
+
+- Add a descriptive within-run frametime tail spread (p99 minus median) to pair reports and aggregate-only CSV/JSON exports; version the pair JSON schema as v4.
+- Label the metric as descriptive, not a significance test or a guarantee of perceived smoothness; retain existing causal and repeatability cautions.
+
 ## 1.5.0 - 2026-10-09
 
 - Add a literal, case-insensitive search to locate benchmark runs for the full-history Baseline/Variant selectors without changing the current pair while typing.

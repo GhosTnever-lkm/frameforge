@@ -4,6 +4,10 @@ Updated: 2026-10-09
 
 ## Current version
 
+- Published: v1.5.0, full-history searchable Baseline/Variant assignment. Release workflow [37871225454](https://github.com/GhosTnever-lkm/frameforge/actions/runs/37871225454) passed tests, compile, Windows build and release publication. Downloaded archive SHA-256 verified as `3529ecece917443a08898a34fe41929d40d37d6fdf462e523566b590f64d1537`; extracted app launched and responded with title `FrameForge — Game Tuning Studio`.
+- Portfolio commit `0bb4ca94ff7e051ad5369da7bfe911f5dda81c08` updates the FrameForge card to v1.5.0. Pages run [37871422009](https://github.com/GhosTnever-lkm/GhosTnever-lkm.github.io/actions/runs/37871422009) remains in its deploy step; a fresh live-page request still showed the old v1.4.0 card at the latest check.
+- Local v1.5.0 checks: 94 tests pass; 4 symlink tests skip due to environment privileges; compileall and diff check pass. Search/index Qt offscreen smokes pass.
+
 - Published: v1.4.0, searchable benchmark history list and explicit group-filter scope.
 - GitHub Actions release run [37869978554](https://github.com/GhosTnever-lkm/frameforge/actions/runs/37869978554) passed tests, compilation, Windows build and release publication.
 - Published archive: [FrameForge v1.4.0](https://github.com/GhosTnever-lkm/frameforge/releases/tag/v1.4.0), `FrameForge-1.4.0-windows-x64.zip`; SHA-256 `e0d814e9f7c9bccb8e421a53b518a8695f3ea1a4db3469b9471913e3b831d604`.
@@ -47,7 +51,7 @@ Updated: 2026-10-09
 - Local checks: 88 unit tests pass (4 symlink skips); compileall and diff check pass. GUI smokes cover case-insensitive/literal search, zero matches, reset, selection/group behavior, full combo options, hidden group counts, and import resetting the filter.
 - DeepSeek review found no confirmed blockers. Remaining design choice: the filter is only for the group-assignment list; Baseline/Variant selectors remain full-history.
 
-## Work in progress: v1.5.0
+## v1.5.0 behavior
 
 - Adds a case-insensitive literal search across the full benchmark history to locate entries for Baseline/Variant. Search results keep the source history index in `UserRole`; duplicate filenames have distinct numbered rows.
 - Typing, clearing or getting no matches never changes the selected pair. Users explicitly assign one selected result to A or B. Changing a selected pair clears its old pair report/export until a fresh comparison is run; group reports remain unaffected.
@@ -55,8 +59,15 @@ Updated: 2026-10-09
 - Local test suite currently: 94 passed, 4 platform-dependent symlink skips. `compileall` and `git diff --check` pass; the UI version matches `VERSION`. Qt offscreen smokes verify duplicate-name identities, a filtered row 0 assigning original history index 47, no-result behavior, invalid pair rejection, and pair-report/group-export state.
 - DeepSeek recommended this separate search/list/explicit-assignment design. Its first code-review concern about `itemData(index)` was resolved by an exact Qt smoke where result row 0 stores history index 47 and correctly assigns combo item 47; DeepSeek withdrew the concern and confirmed no blockers. The concern about batch truncation is addressed by the import flow synchronously selecting and comparing the newest retained pair before returning.
 
+## Work in progress: v1.6.0
+
+- Pair reports and aggregate-only CSV/JSON exports now show the descriptive within-run tail spread `p99 − median` in milliseconds.
+- Pair comparison JSON schema is version 4 so clients can distinguish the new field from v3; the repeated-group JSON schema is unchanged.
+- Report and README state this is not a significance test or a guarantee of perceived smoothness. Regression coverage checks exact values, report wording and export fields.
+- Local test suite currently: 95 passed, 4 platform-dependent symlink skips.
+
 ## Next
 
-1. Complete release gates and publish v1.5.0.
-2. Update and verify the portfolio card for v1.5.0 after publication.
+1. Complete release gates and publish v1.6.0.
+2. Resolve/verify the delayed Pages deployment for the v1.5.0 portfolio card.
 3. Continue FrameForge improvements within the five-hour work block.

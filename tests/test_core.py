@@ -15,7 +15,7 @@ from frameforge.core.benchmark import (
     Benchmark, FrameTimingSummary, FRAME_BUDGET_FPS_PRESETS, FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks,
     compare_benchmark_groups, export_comparison_csv, export_comparison_json, format_budget_threshold_label,
     export_group_comparison_csv, export_group_comparison_json, load_benchmark_csv,
-    frame_budget_share, load_frame_time_csv, summarize_benchmark_group,
+    frame_budget_share, frame_time_spread_ms, load_frame_time_csv, summarize_benchmark_group,
 )
 from frameforge.core.benchmark_store import BenchmarkStore, MAX_HISTORY, SCHEMA_VERSION
 from frameforge.core.safety import SafetyError, get_documents_root, validate_config_path
@@ -688,7 +688,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertIn("frame_time_metric_kind", csv_export)
         self.assertIn("frame_time_bucket_5_share", csv_export)
         data = json.loads(json_export)
-        self.assertEqual(data["schema_version"], 3)
+        self.assertEqual(data["schema_version"], 4)
         self.assertEqual(data["baseline_a"]["frame_time_metric_kind"], "generic")
         self.assertEqual(data["baseline_a"]["frame_time_bucket_counts"], list(before.frame_time_buckets))
         self.assertEqual(data["variant_b"]["sample_count"], 3)
@@ -837,8 +837,22 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertEqual(payload["frame_budget_target_fps"], 60)
         self.assertEqual(payload["baseline_a"]["frame_budget_within_share"], 0.5)
         self.assertEqual(payload["variant_b"]["frame_budget_within_share"], 0.5)
+        self.assertEqual(payload["baseline_a"]["p99_minus_median_frame_time_ms"], 10)
+        self.assertEqual(payload["variant_b"]["p99_minus_median_frame_time_ms"], 22)
         self.assertNotIn("before.csv", json.dumps(payload))
         self.assertIn("frame_budget_target_fps", export_comparison_csv(before, after, 60))
+
+    def test_tail_spread_is_p99_minus_median_and_labeled_descriptively(self):
+        baseline = analyze_frame_times("baseline.csv", [10.0] * 98 + [100.0] * 2)
+        variant = analyze_frame_times("variant.csv", [10.0] * 98 + [50.0] * 2)
+        self.assertEqual(frame_time_spread_ms(baseline), 90.0)
+        self.assertEqual(frame_time_spread_ms(variant), 40.0)
+        report = compare_benchmarks(baseline, variant)
+        self.assertIn("Разброс хвоста frametime (p99 − медиана)", report)
+        self.assertIn("A 90.00 → B 40.00 ms (-50.00 ms", report)
+        self.assertIn("не статистический тест", report)
+        rows = {row["metric"]: row for row in csv.DictReader(io.StringIO(export_comparison_csv(baseline, variant)))}
+        self.assertEqual(rows["p99_minus_median_frame_time_ms"]["delta_b_minus_a"], "-50.0")
 
     def test_benchmark_history_v6_migrates_with_empty_frame_timing(self):
         path = Path(self.temp.name) / "benchmarks-v6.json"
