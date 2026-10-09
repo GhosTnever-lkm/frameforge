@@ -4,13 +4,20 @@ Updated: 2026-10-09
 
 ## Current version
 
+- Published: v1.3.0, batch benchmark CSV import.
+- Local checks for v1.3.0: 88 unit tests pass; 4 platform-dependent symlink tests are skipped; compileall, diff check and GUI smokes pass.
+- GitHub Actions run [37869482152](https://github.com/GhosTnever-lkm/frameforge/actions/runs/37869482152) passed tests, Windows portable build and startup smoke.
+- Published archive: [FrameForge v1.3.0](https://github.com/GhosTnever-lkm/frameforge/releases/tag/v1.3.0), `FrameForge-1.3.0-windows-x64.zip`; SHA-256 `a3b1dee165cbd38beebffa69dd7f5e1ccc597f794e8a38217f870c215e07830b`.
+- Downloaded the v1.3.0 archive, verified its SHA-256, extracted it and launched the EXE; the window title was `FrameForge — Game Tuning Studio` and the process responded.
+- DeepSeek reviewed the batch import; after retracting a false positive, it found no confirmed blockers. The review scope clarified per-file error handling, history truncation, group minima, filter behavior, and auto-pair visibility.
+- Portfolio card: [live site](https://ghostnever-lkm.github.io/) now links to v1.3.0 and describes frame budgets and batch CSV import. Deployment run [37869842446](https://github.com/GhosTnever-lkm/GhosTnever-lkm.github.io/actions/runs/37869842446) succeeded and the refreshed page shows the new copy and links.
+
 - Published: v1.2.0, cross-game frame-budget reporting.
 - Local v1.2.0 checks: 88 unit tests pass; 4 platform-dependent symlink tests are skipped; compileall, diff check and offscreen GUI smoke pass.
 - GitHub Actions run [37869046502](https://github.com/GhosTnever-lkm/frameforge/actions/runs/37869046502) passed tests, Windows portable build and startup smoke.
 - Published archive: [FrameForge v1.2.0](https://github.com/GhosTnever-lkm/frameforge/releases/tag/v1.2.0), `FrameForge-1.2.0-windows-x64.zip`; SHA-256 `66fbef54b64881b252890330a24f3a886d7d02a9a04b837002b6b6e2a9c57ac4`.
 - Downloaded release archive, verified its SHA-256, extracted it and launched `FrameForge.exe`; the window title was `FrameForge — Game Tuning Studio` and the process responded.
 - DeepSeek reviewed v1.2.0 and found no blockers in the described scope.
-- Portfolio last published card: v1.1.0; update it after the v1.3.0 release is verified.
 
 ## v1.2.0 behavior
 
@@ -18,16 +25,23 @@ Updated: 2026-10-09
 - Shows the selected threshold in A/B and repeated-run reports; old history migrates to schema v8 with an explicit unavailable value.
 - Keeps single and group exports aggregate-only and includes the selected target.
 
-## Work in progress: v1.3.0
+## v1.3.0 behavior
 
 - Multi-select benchmark CSV import applies one shared game/scene/checklist context, saves valid selections as a single bounded batch, and reports per-file failures.
 - Keeps history aligned with the newest 100 runs in memory and on disk; removes group references to evicted runs and validates minimum group size on compare.
 - Adds numbered error/warning rows and counts omitted messages; README documents automatic comparison of the newest retained pair.
-- Local checks: 88 unit tests pass (4 symlink skips), compileall and diff check pass. Offscreen GUI smokes pass for mixed valid/invalid imports, 100-run truncation, group cleanup, and 13-file error summaries.
-- DeepSeek initially reported a false positive about `SafetyError`; after checking the actual parser and its `ValueError` inheritance, it retracted the finding and confirmed no blockers. Also confirmed group validation reruns the three-run minimum.
+- Offscreen GUI smokes pass for mixed valid/invalid imports, 100-run truncation, group cleanup, and 13-file error summaries.
+
+## Work in progress: v1.4.0
+
+- Adds a case-insensitive history-list filter across CSV name, game, scene, metric type, local note, setting snapshot and checklist labels. It does not alter the saved history.
+- Clears list selection when the filter changes; existing A/B group membership persists and status reports how many group members are hidden.
+- Makes the scope explicit: Baseline/Variant selectors and exports use full history; group reports use every assigned member. A successful batch import clears the active filter before showing the newest pair.
+- Local checks: 88 unit tests pass (4 symlink skips); compileall and diff check pass. GUI smokes cover case-insensitive/literal search, zero matches, reset, selection/group behavior, full combo options, hidden group counts, and import resetting the filter.
+- DeepSeek review found no confirmed blockers. Remaining design choice: the filter is only for the group-assignment list; Baseline/Variant comboboxes remain full-history.
 
 ## Next
 
-1. Publish v1.3.0 after final local verification.
+1. Publish v1.4.0 after final verification.
 2. Update the portfolio card and verify the Pages deployment.
 3. Continue FrameForge improvements within the five-hour work block.

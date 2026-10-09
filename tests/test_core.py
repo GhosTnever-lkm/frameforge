@@ -624,6 +624,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertIn("не тест статистической значимости", report)
         self.assertIn("1% low по CSV", report)
         self.assertIn("не pooled-показатели группы", report)
+        self.assertIn("Фильтр списка влияет только на выбор участников", report)
         self.assertIn("прогонах IQR особенно чувствителен", report)
         self.assertIn("№ | n_frames | average FPS | 1% low FPS | p99 frametime", report)
         self.assertIn("  1 | 10 | 100.00 | 100.00 | 10.00", report)

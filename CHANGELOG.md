@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0 - 2026-10-09
+
+- Add a case-insensitive text filter for benchmark history across filename, game, scene, metric kind, local note and optional setting snapshot.
+- Show matching versus total run counts; clear list selection when the filter changes while preserving temporary A/B group assignments and showing how many members are hidden. The filter applies to the list used for group assignment, not the full-history Baseline/Variant selectors or explicit exports.
+- Clear an active history filter after successful batch import so the automatically compared newest pair remains visible.
+- Clarify in repeated-group reports that the list filter changes only assignment visibility; comparisons still use all runs already assigned to each group.
+
 ## 1.3.0 - 2026-10-09
 
 - Import multiple benchmark CSV files in one operation for faster repeated A/B capture workflows.

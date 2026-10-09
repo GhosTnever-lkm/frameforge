@@ -382,8 +382,19 @@ class MainWindow(QMainWindow):
         self._benchmark_group_a: set[int] = set()
         self._benchmark_group_b: set[int] = set()
         self._last_benchmark_comparison = None
+        history_filter_row = QHBoxLayout()
+        self.benchmark_history_filter = QLineEdit()
+        self.benchmark_history_filter.setPlaceholderText("Фильтр списка для групп: файл, игра, сцена, тип, заметка…")
+        self.benchmark_history_filter.setAccessibleName("Фильтр списка замеров для групп")
+        self.benchmark_history_filter.setClearButtonEnabled(True)
+        self.benchmark_history_filter.textChanged.connect(self._filter_benchmark_history)
+        history_filter_row.addWidget(self.benchmark_history_filter, 1)
+        self.benchmark_history_count = QLabel()
+        self.benchmark_history_count.setObjectName("muted")
+        history_filter_row.addWidget(self.benchmark_history_count)
+        layout.addLayout(history_filter_row)
         layout.addWidget(self.benchmark_list)
-        group_help = QLabel("Повторные замеры: выдели не менее 3 CSV в каждой группе. Группы временные и сбросятся при перезапуске.")
+        group_help = QLabel("Повторные замеры: выдели не менее 3 CSV в каждой группе. Фильтр списка влияет только на это назначение; поля Baseline/Variant используют всю историю. Группы временные и сбросятся при перезапуске.")
         group_help.setObjectName("muted")
         group_help.setWordWrap(True)
         layout.addWidget(group_help)
@@ -432,10 +443,16 @@ class MainWindow(QMainWindow):
         compare_button.clicked.connect(self.compare_benchmark_selection)
         compare_row.addWidget(compare_button)
         layout.addLayout(compare_row)
+        compare_scope_hint = QLabel("Baseline/Variant доступны из всей истории; фильтр ниже влияет только на список для групп.")
+        compare_scope_hint.setObjectName("muted")
+        layout.addWidget(compare_scope_hint)
         self.export_benchmark_button = QPushButton("Экспортировать сводку…")
         self.export_benchmark_button.clicked.connect(self.export_benchmark_selection)
         self.export_benchmark_button.setEnabled(False)
         layout.addWidget(self.export_benchmark_button)
+        export_scope_hint = QLabel("Экспортируется последняя выбранная пара или группа; фильтр списка на экспорт не влияет.")
+        export_scope_hint.setObjectName("muted")
+        layout.addWidget(export_scope_hint)
         self._refresh_benchmark_history()
         self.benchmark_report = QTextEdit()
         self.benchmark_report.setReadOnly(True)
@@ -525,6 +542,7 @@ class MainWindow(QMainWindow):
         retained_ids = {id(run) for run in updated_runs}
         self._benchmark_group_a.intersection_update(retained_ids)
         self._benchmark_group_b.intersection_update(retained_ids)
+        self.benchmark_history_filter.clear()
         self.benchmark_change_note.clear()
         self.benchmark_include_setting.setChecked(False)
         self._refresh_benchmark_checklist()
@@ -561,6 +579,7 @@ class MainWindow(QMainWindow):
             self.benchmark_list.addItem(item)
         if hasattr(self, "benchmark_groups_status"):
             self.benchmark_groups_status.setText(f"Группа A: {len(self._benchmark_group_a)} · Группа B: {len(self._benchmark_group_b)}")
+        self._filter_benchmark_history(self.benchmark_history_filter.text())
         if not hasattr(self, "benchmark_before"):
             return
         previous_before = self.benchmark_before.currentData()
@@ -577,6 +596,46 @@ class MainWindow(QMainWindow):
         if self.benchmark_runs:
             self.benchmark_before.setCurrentIndex(previous_before if isinstance(previous_before, int) and previous_before < len(self.benchmark_runs) else 0)
             self.benchmark_after.setCurrentIndex(previous_after if isinstance(previous_after, int) and previous_after < len(self.benchmark_runs) else len(self.benchmark_runs) - 1)
+
+    def _filter_benchmark_history(self, query: str):
+        if not hasattr(self, "benchmark_list") or not hasattr(self, "benchmark_history_count"):
+            return
+        self.benchmark_list.clearSelection()
+        needle = query.strip().casefold()
+        visible_count = 0
+        visible_run_ids = set()
+        for row in range(self.benchmark_list.count()):
+            item = self.benchmark_list.item(row)
+            index = item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+                item.setHidden(bool(needle))
+                visible_count += not bool(needle)
+                continue
+            run = self.benchmark_runs[index]
+            checklist = " ".join(GUIDE_CHECKLIST_LABELS.get(key, key) for key in run.manual_changes)
+            searchable = " ".join((
+                run.name,
+                run.game,
+                run.scene,
+                METRIC_LABELS.get(run.metric_kind, run.metric_kind),
+                run.change_note,
+                run.setting_key,
+                str(run.setting_value) if run.setting_value is not None else "",
+                checklist,
+            )).casefold()
+            hidden = bool(needle) and needle not in searchable
+            item.setHidden(hidden)
+            visible_count += not hidden
+            if not hidden:
+                visible_run_ids.add(id(run))
+        self.benchmark_history_count.setText(f"{visible_count} из {self.benchmark_list.count()} · выделение сбрасывается, группы сохраняются")
+        if hasattr(self, "benchmark_groups_status"):
+            hidden_a = len(self._benchmark_group_a - visible_run_ids)
+            hidden_b = len(self._benchmark_group_b - visible_run_ids)
+            self.benchmark_groups_status.setText(
+                f"Группа A: {len(self._benchmark_group_a)} (вне фильтра: {hidden_a}) · "
+                f"Группа B: {len(self._benchmark_group_b)} (вне фильтра: {hidden_b})"
+            )
 
     def _refresh_benchmark_checklist(self, *_args):
         self.benchmark_changes.clear()
