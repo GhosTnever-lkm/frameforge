@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QProcess, QSettings, Qt, QTimer
 from PySide6.QtGui import QFont, QIcon, QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
@@ -36,6 +36,7 @@ from ..core.game_overlay import (
     activate_window, find_csgo_window, foreground_window_handle, get_csgo_window,
     place_overlay, position_overlay_window,
 )
+from ..core.presentmon_capture import CAPTURE_DURATIONS_SECONDS, build_presentmon_arguments
 from ..core.profiles import TUNING_PROFILES
 from ..core.safety import SafetyError
 from ..core.settings_snapshot import read_allowed_setting_snapshot
@@ -138,6 +139,14 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "assets" / "frameforge-icon.png")))
         self.resize(1200, 780)
         self.setMinimumSize(960, 640)
+        self.presentmon_settings = QSettings("GhosTnever", "FrameForge")
+        self.presentmon_capture_process: QProcess | None = None
+        self.presentmon_capture_path: Path | None = None
+        self.presentmon_capture_deadline = 0.0
+        self.presentmon_capture_metadata: dict[str, object] = {}
+        self.presentmon_capture_timer = QTimer(self)
+        self.presentmon_capture_timer.setInterval(1000)
+        self.presentmon_capture_timer.timeout.connect(self._update_presentmon_capture_status)
         self.config_path: Path | None = None
         self.game_folder: Path | None = None
         self.original: bytes | None = None
@@ -1064,6 +1073,53 @@ class MainWindow(QMainWindow):
         import_button = QPushButton("Импортировать CSV замера")
         import_button.clicked.connect(self.import_benchmark)
         layout.addWidget(import_button)
+        capture_title = QLabel("Записать замер прямо из игры")
+        capture_title.setStyleSheet("font-size:13pt;font-weight:700")
+        layout.addWidget(capture_title)
+        capture_help = QLabel(
+            "Выбери PresentMon.exe, сначала открой игру и нужную сцену, затем начни захват. "
+            "FrameForge запишет только указанный процесс на выбранное время, автоматически импортирует CSV "
+            "и добавит результат в локальную историю."
+        )
+        capture_help.setObjectName("muted")
+        capture_help.setWordWrap(True)
+        layout.addWidget(capture_help)
+        presentmon_row = QHBoxLayout()
+        self.presentmon_path = QLineEdit(str(self.presentmon_settings.value("presentmon/executable", "")))
+        self.presentmon_path.setPlaceholderText("Путь к PresentMon.exe")
+        self.presentmon_path.setAccessibleName("Путь к PresentMon.exe")
+        self.presentmon_path.editingFinished.connect(self._save_presentmon_path)
+        presentmon_row.addWidget(self.presentmon_path, 1)
+        choose_presentmon = QPushButton("Выбрать…")
+        choose_presentmon.clicked.connect(self.choose_presentmon_executable)
+        presentmon_row.addWidget(choose_presentmon)
+        get_presentmon = QPushButton("Скачать PresentMon")
+        get_presentmon.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/GameTechDev/PresentMon/releases/latest")))
+        presentmon_row.addWidget(get_presentmon)
+        layout.addLayout(presentmon_row)
+        capture_options = QHBoxLayout()
+        capture_options.addWidget(QLabel("Процесс игры (.exe):"))
+        self.presentmon_process_name = QLineEdit("csgo.exe")
+        self.presentmon_process_name.setMaximumWidth(210)
+        self.presentmon_process_name.setAccessibleName("Имя процесса игры для PresentMon")
+        self.presentmon_process_name.setToolTip("Только имя исполняемого файла, например csgo.exe или game.exe")
+        capture_options.addWidget(self.presentmon_process_name)
+        capture_options.addWidget(QLabel("Длительность:"))
+        self.presentmon_duration = QComboBox()
+        for duration in CAPTURE_DURATIONS_SECONDS:
+            self.presentmon_duration.addItem(f"{duration} секунд", duration)
+        self.presentmon_duration.setCurrentIndex(CAPTURE_DURATIONS_SECONDS.index(120))
+        capture_options.addWidget(self.presentmon_duration)
+        self.presentmon_start_button = QPushButton("Начать захват")
+        self.presentmon_start_button.setObjectName("primary")
+        self.presentmon_start_button.clicked.connect(self.start_presentmon_capture)
+        capture_options.addWidget(self.presentmon_start_button)
+        capture_options.addStretch(1)
+        layout.addLayout(capture_options)
+        self.presentmon_capture_status = QLabel("Захват не запущен. Поддерживаются процессы Windows с расширением .exe.")
+        self.presentmon_capture_status.setObjectName("muted")
+        self.presentmon_capture_status.setWordWrap(True)
+        layout.addWidget(self.presentmon_capture_status)
         compare_row = QHBoxLayout()
         compare_row.addWidget(QLabel("Baseline (A):"))
         self.benchmark_before = QComboBox()
@@ -1181,12 +1237,149 @@ class MainWindow(QMainWindow):
         return scroll
 
     def import_benchmark(self):
-        setting_key = ""
-        setting_value = None
         paths, _ = QFileDialog.getOpenFileNames(self, "Выбрать один или несколько CSV с временем кадров", "", "CSV files (*.csv);;All files (*)")
         if not paths:
             return
+        self._import_benchmark_files(paths)
+
+    def choose_presentmon_executable(self):
+        current = self.presentmon_path.text().strip()
+        initial = str(Path(current).parent) if current else ""
+        selected, _ = QFileDialog.getOpenFileName(self, "Выбрать PresentMon.exe", initial, "PresentMon executable (PresentMon*.exe);;Executable files (*.exe)")
+        if selected:
+            self.presentmon_path.setText(selected)
+            self._save_presentmon_path()
+
+    def _save_presentmon_path(self):
+        self.presentmon_settings.setValue("presentmon/executable", self.presentmon_path.text().strip())
+
+    def start_presentmon_capture(self):
+        if self.presentmon_capture_process is not None:
+            return
+        game = self.benchmark_game.currentData() or ""
+        scene = self.benchmark_scene.text().strip()
+        process_name = self.presentmon_process_name.text().strip()
+        duration = self.presentmon_duration.currentData()
+        if not game:
+            QMessageBox.information(self, "Выбери игру", "Перед захватом укажи игру в метках замера.")
+            self.benchmark_game.setFocus()
+            return
+        if not scene:
+            QMessageBox.information(self, "Укажи сцену", "Введи карту, маршрут или сцену, которую будешь повторять в A/B-замерах.")
+            self.benchmark_scene.setFocus()
+            return
+        executable = Path(self.presentmon_path.text().strip())
+        capture_dir = app_data_dir() / "captures"
+        game_slug = re.sub(r"[^a-z0-9]+", "-", game.casefold()).strip("-")[:32] or "game"
+        capture_file = capture_dir / f"{game_slug}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.csv"
+        try:
+            capture_dir.mkdir(parents=True, exist_ok=True)
+            arguments = build_presentmon_arguments(executable, capture_file, process_name, duration)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Захват не запущен", str(exc))
+            return
+        self._save_presentmon_path()
+        self.presentmon_capture_path = capture_file
+        self.presentmon_capture_metadata = {
+            "game": game,
+            "scene": scene,
+            "change_note": self.benchmark_change_note.text().strip(),
+            "manual_changes": tuple(
+                self.benchmark_changes.item(index).data(Qt.ItemDataRole.UserRole)
+                for index in range(self.benchmark_changes.count())
+                if self.benchmark_changes.item(index).checkState() == Qt.CheckState.Checked
+            ),
+        }
         if self.benchmark_include_setting.isChecked():
+            if game != "The Elder Scrolls V: Skyrim Special Edition" or not self.config_path:
+                QMessageBox.warning(self, "Снимок настройки не добавлен", "Для снимка выбери Skyrim Special Edition и папку настроек на странице «Оптимизатор».")
+                return
+            try:
+                self.presentmon_capture_metadata["setting_snapshot"] = read_allowed_setting_snapshot(self.config_path)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "Снимок настройки не добавлен", f"Не удалось безопасно прочитать разрешённый параметр. Захват не запущен.\n{exc}")
+                return
+        self.presentmon_capture_error_text = ""
+        process = QProcess(self)
+        process.setProgram(str(executable))
+        process.setArguments(arguments)
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        process.readyReadStandardError.connect(self._read_presentmon_stderr)
+        process.errorOccurred.connect(self._presentmon_process_error)
+        process.finished.connect(self._presentmon_process_finished)
+        self.presentmon_capture_process = process
+        self.presentmon_capture_deadline = time.monotonic() + duration
+        process.started.connect(self._update_presentmon_capture_status)
+        self.presentmon_start_button.setEnabled(False)
+        self.presentmon_capture_status.setText(f"Запускаю PresentMon для {process_name} · захват {duration} с…")
+        self.presentmon_capture_timer.start()
+        process.start()
+
+    def _read_presentmon_stderr(self):
+        process = self.presentmon_capture_process
+        if process is None:
+            return
+        output = bytes(process.readAllStandardError()).decode("utf-8", errors="replace").strip()
+        if output:
+            self.presentmon_capture_error_text = output[-1200:]
+
+    def _update_presentmon_capture_status(self):
+        if self.presentmon_capture_process is None:
+            self.presentmon_capture_timer.stop()
+            return
+        remaining = max(0, int(self.presentmon_capture_deadline - time.monotonic() + 0.999))
+        self.presentmon_capture_status.setText(f"Идёт замер PresentMon · осталось примерно {remaining} с · не меняй сцену и настройки до завершения.")
+
+    def _presentmon_process_error(self, error):
+        if error == QProcess.ProcessError.FailedToStart:
+            process = self.presentmon_capture_process
+            details = process.errorString() if process is not None else "Не удалось запустить PresentMon."
+            self._reset_presentmon_capture()
+            QMessageBox.warning(self, "PresentMon не запущен", details)
+
+    def _reset_presentmon_capture(self):
+        self.presentmon_capture_timer.stop()
+        self.presentmon_start_button.setEnabled(True)
+        self.presentmon_capture_process = None
+
+    def _presentmon_process_finished(self, exit_code, _exit_status):
+        process = self.presentmon_capture_process
+        self._read_presentmon_stderr()
+        details = getattr(self, "presentmon_capture_error_text", "")
+        output_path = self.presentmon_capture_path
+        self._reset_presentmon_capture()
+        if process is not None:
+            process.deleteLater()
+        if exit_code != 0:
+            self.presentmon_capture_status.setText("PresentMon завершился с ошибкой; захват не импортирован.")
+            QMessageBox.warning(self, "Ошибка захвата PresentMon", f"Код завершения: {exit_code}. Проверь доступ PresentMon к системной трассировке и повтори захват.\n\n{details or 'Дополнительные сведения не предоставлены.'}")
+            return
+        if output_path is None or not output_path.is_file() or output_path.stat().st_size == 0:
+            self.presentmon_capture_status.setText("PresentMon завершил работу, но файл с кадрами не создан.")
+            QMessageBox.information(self, "Кадры не записаны", "Проверь, что указанный процесс игры был запущен во время захвата и PresentMon получил данные.")
+            return
+        self.presentmon_capture_error_text = ""
+        self.presentmon_capture_status.setText(f"Захват сохранён: {output_path.name} · импортирую CSV в историю…")
+        imported = self._import_benchmark_files([str(output_path)], context=self.presentmon_capture_metadata)
+        if imported:
+            self.presentmon_capture_status.setText(f"Захват завершён и добавлен в локальную историю: {output_path.name}")
+        else:
+            self.presentmon_capture_status.setText(f"Захват сохранён, но не добавлен в историю: {output_path.name}")
+
+    def _import_benchmark_files(self, paths: list[str], *, context: dict[str, object] | None = None):
+        setting_key = ""
+        setting_value = None
+        game = str(context.get("game", "")) if context else (self.benchmark_game.currentData() or "")
+        scene = str(context.get("scene", "")) if context else self.benchmark_scene.text().strip()
+        change_note = str(context.get("change_note", "")) if context else self.benchmark_change_note.text().strip()
+        manual_changes = tuple(context.get("manual_changes", ())) if context else tuple(
+            self.benchmark_changes.item(index).data(Qt.ItemDataRole.UserRole)
+            for index in range(self.benchmark_changes.count())
+            if self.benchmark_changes.item(index).checkState() == Qt.CheckState.Checked
+        )
+        if context and "setting_snapshot" in context:
+            setting_key, setting_value = context["setting_snapshot"]
+        elif self.benchmark_include_setting.isChecked():
             if self.benchmark_game.currentData() != "The Elder Scrolls V: Skyrim Special Edition":
                 QMessageBox.warning(self, "Снимок настройки не добавлен", "Для снимка выбери The Elder Scrolls V: Skyrim Special Edition или сними флажок.")
                 return
@@ -1202,18 +1395,13 @@ class MainWindow(QMainWindow):
         imported_names: list[tuple[int, str]] = []
         file_warnings: list[str] = []
         file_errors: list[str] = []
-        manual_changes = tuple(
-            self.benchmark_changes.item(index).data(Qt.ItemDataRole.UserRole)
-            for index in range(self.benchmark_changes.count())
-            if self.benchmark_changes.item(index).checkState() == Qt.CheckState.Checked
-        )
         for selected_index, path in enumerate(paths, start=1):
             try:
                 run, warnings = load_benchmark_csv(Path(path))
                 imported.append(Benchmark(
                     name=run.name,
-                    game=self.benchmark_game.currentData() or "",
-                    scene=self.benchmark_scene.text().strip(),
+                    game=game,
+                    scene=scene,
                     sample_count=run.sample_count,
                     average_fps=run.average_fps,
                     one_percent_low_fps=run.one_percent_low_fps,
@@ -1223,7 +1411,7 @@ class MainWindow(QMainWindow):
                     max_frame_time_ms=run.max_frame_time_ms,
                     frame_time_buckets=run.frame_time_buckets,
                     metric_kind=run.metric_kind,
-                    change_note=self.benchmark_change_note.text().strip(),
+                    change_note=change_note,
                     frame_timing=run.frame_timing,
                     frame_budget_counts=run.frame_budget_counts,
                     setting_key=setting_key,
@@ -1240,7 +1428,7 @@ class MainWindow(QMainWindow):
                 details_lines.append(f"… и ещё {len(file_errors) - 10} файлов с ошибками")
             details = "\n".join(details_lines) or "Не удалось получить данные из выбранных файлов."
             QMessageBox.warning(self, "CSV не загружены", details)
-            return
+            return False
         # Aggregate equality is only a hint: two separate captures may coincide.
         # Keep one copy automatically, but ask before skipping any probable duplicate.
         seen: dict[tuple[object, ...], str] = {}
@@ -1265,7 +1453,7 @@ class MainWindow(QMainWindow):
         if probable_duplicates:
             dialog = ProbableDuplicateDialog(probable_duplicates, len(imported), self)
             if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
+                return False
             keep_duplicates = dialog.positions_to_keep()
             duplicate_positions = {position for position, _, _, _ in probable_duplicates}
             accepted = [run for position, run in enumerate(imported) if position not in duplicate_positions or position in keep_duplicates]
@@ -1280,17 +1468,17 @@ class MainWindow(QMainWindow):
                 if len(file_warnings) > 12:
                     details.append(f"… и ещё {len(file_warnings) - 12} предупреждений")
             QMessageBox.information(self, "Новые CSV не добавлены", "\n\n".join(details))
-            return
+            return False
         try:
             updated_runs = retain_benchmark_runs(self.benchmark_runs + accepted)
         except ValueError as exc:
             QMessageBox.warning(self, "Не удалось обновить историю", str(exc))
-            return
+            return False
         try:
             self.benchmark_store.save(updated_runs)
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Замеры не сохранены", f"Ни один новый результат не добавлен в историю. Предыдущая история сохранена.\n{exc}")
-            return
+            return False
         self.benchmark_runs = updated_runs
         retained_ids = {id(run) for run in updated_runs}
         self._benchmark_group_a.intersection_update(retained_ids)
@@ -1323,6 +1511,7 @@ class MainWindow(QMainWindow):
             self.benchmark_before.setCurrentIndex(len(self.benchmark_runs) - 2)
             self.benchmark_after.setCurrentIndex(len(self.benchmark_runs) - 1)
             self.compare_benchmark_selection(record_recent=False)
+        return True
 
     def _refresh_benchmark_history(self):
         self.benchmark_list.clear()

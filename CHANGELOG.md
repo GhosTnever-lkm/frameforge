@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.18.0 - 2026-10-10
+
+- Add an optional timed PresentMon capture for a selected running game process, with automatic CSV import into the local benchmark history.
+- Save captures in `%LOCALAPPDATA%\FrameForge\captures`, remember the selected PresentMon executable locally, and preserve the game, scene, note, and checklist labels from capture start.
+- Validate the executable path, process name, output format, and supported 30/60/120/300-second durations without using a command shell or requesting elevation.
+- Add regression coverage for the PresentMon command arguments and invalid capture options.
+
 ## 1.17.0 - 2026-10-10
 
 - Add a separate, interactive always-on-top FrameForge panel that tracks a visible CS:GO Legacy window and hides when the user switches to another app.
