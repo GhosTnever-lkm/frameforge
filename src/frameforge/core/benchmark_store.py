@@ -7,14 +7,19 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from .benchmark import Benchmark, FRAME_TIME_BUCKET_EDGES_MS, MAX_SAMPLES
+from .benchmark import Benchmark, FRAME_TIME_BUCKET_EDGES_MS, MAX_CHANGE_NOTE_CHARS, MAX_SAMPLES, METRIC_KINDS
+from .profiles import TUNING_PROFILES
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 LEGACY_SCHEMA_VERSION = 1
+LABEL_SCHEMA_VERSION = 2
+METRIC_SCHEMA_VERSION = 3
+NOTE_SCHEMA_VERSION = 4
+ALLOWED_SETTING_KEYS = frozenset(profile.setting for profile in TUNING_PROFILES)
 MAX_HISTORY = 100
 MAX_STORE_BYTES = 2 * 1024 * 1024
 _FIELDS = {
-    "name", "game", "scene", "sample_count", "average_fps", "one_percent_low_fps",
+    "name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "sample_count", "average_fps", "one_percent_low_fps",
     "p99_frame_time_ms", "median_frame_time_ms", "min_frame_time_ms",
     "max_frame_time_ms", "frame_time_buckets",
 }
@@ -26,14 +31,38 @@ def _validate_benchmark(value: object) -> Benchmark:
     name = value["name"]
     game = value["game"]
     scene = value["scene"]
+    metric_kind = value["metric_kind"]
+    change_note = value["change_note"]
+    setting_key = value["setting_key"]
+    setting_value = value["setting_value"]
     count = value["sample_count"]
     if not isinstance(name, str) or not name or len(name) > 255 or "/" in name or "\\" in name:
         raise ValueError("Имя замера в истории некорректно.")
     if not isinstance(game, str) or len(game) > 100 or not isinstance(scene, str) or len(scene) > 120:
         raise ValueError("Метки игры или сцены в истории некорректны.")
+    if not isinstance(metric_kind, str) or metric_kind not in METRIC_KINDS:
+        raise ValueError("Тип метрики в истории некорректен.")
+    if (
+        not isinstance(change_note, str)
+        or len(change_note) > MAX_CHANGE_NOTE_CHARS
+        or any(ord(character) < 32 for character in change_note)
+    ):
+        raise ValueError("Заметка к замеру в истории некорректна.")
+    if not isinstance(setting_key, str):
+        raise ValueError("Снимок настройки в истории некорректен.")
+    if setting_key == "":
+        if setting_value is not None:
+            raise ValueError("Снимок настройки в истории некорректен.")
+    elif (
+        setting_key not in ALLOWED_SETTING_KEYS
+        or isinstance(setting_value, bool)
+        or not isinstance(setting_value, int)
+        or not 0 <= setting_value <= 100_000
+    ):
+        raise ValueError("Снимок настройки в истории некорректен.")
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_SAMPLES:
         raise ValueError("Количество кадров в истории некорректно.")
-    numeric_fields = _FIELDS - {"name", "game", "scene", "sample_count", "frame_time_buckets"}
+    numeric_fields = _FIELDS - {"name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "sample_count", "frame_time_buckets"}
     for field in numeric_fields:
         item = value[field]
         if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) or item <= 0:
@@ -57,6 +86,10 @@ def _validate_benchmark(value: object) -> Benchmark:
         name=name,
         game=game,
         scene=scene,
+        metric_kind=metric_kind,
+        change_note=change_note,
+        setting_key=setting_key,
+        setting_value=setting_value,
         sample_count=count,
         average_fps=float(value["average_fps"]),
         one_percent_low_fps=float(value["one_percent_low_fps"]),
@@ -86,31 +119,34 @@ class BenchmarkStore:
         if not isinstance(document, dict) or set(document) != {"schema_version", "runs"}:
             raise ValueError("Версия или структура локальной истории бенчмарков не поддерживается.")
         version = document["schema_version"]
-        if isinstance(version, bool) or not isinstance(version, int) or version not in (LEGACY_SCHEMA_VERSION, SCHEMA_VERSION):
+        if isinstance(version, bool) or not isinstance(version, int) or version not in (LEGACY_SCHEMA_VERSION, LABEL_SCHEMA_VERSION, METRIC_SCHEMA_VERSION, NOTE_SCHEMA_VERSION, SCHEMA_VERSION):
             raise ValueError("Версия или структура локальной истории бенчмарков не поддерживается.")
         rows = document["runs"]
         if not isinstance(rows, list) or len(rows) > MAX_HISTORY:
             raise ValueError("Список локальных замеров некорректен.")
-        if version == LEGACY_SCHEMA_VERSION:
+        if version in (LEGACY_SCHEMA_VERSION, LABEL_SCHEMA_VERSION, METRIC_SCHEMA_VERSION, NOTE_SCHEMA_VERSION):
             migrated = []
             for row in rows:
                 if not isinstance(row, dict):
                     raise ValueError("Запись истории имеет неверный набор полей.")
-                migrated.append(_validate_benchmark({**row, "game": "", "scene": ""}))
+                base = dict(row)
+                if version in (LEGACY_SCHEMA_VERSION, LABEL_SCHEMA_VERSION):
+                    base["metric_kind"] = "generic"
+                if version == LEGACY_SCHEMA_VERSION:
+                    base.update({"game": "", "scene": ""})
+                if version < SCHEMA_VERSION:
+                    base.setdefault("change_note", "")
+                    base.setdefault("setting_key", "")
+                    base.setdefault("setting_value", None)
+                migrated.append(_validate_benchmark(base))
             return migrated
         return [_validate_benchmark(row) for row in rows]
 
     def save(self, runs: list[Benchmark]) -> None:
         clean = [_validate_benchmark(asdict(run) | {"frame_time_buckets": list(run.frame_time_buckets)}) for run in runs[-MAX_HISTORY:]]
-        has_labels = any(run.game or run.scene for run in clean)
         stored_runs = [asdict(run) | {"frame_time_buckets": list(run.frame_time_buckets)} for run in clean]
-        version = SCHEMA_VERSION if has_labels else LEGACY_SCHEMA_VERSION
-        if not has_labels:
-            for run in stored_runs:
-                run.pop("game")
-                run.pop("scene")
         document = {
-            "schema_version": version,
+            "schema_version": SCHEMA_VERSION,
             "runs": stored_runs,
         }
         payload = (json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2) + "\n").encode("utf-8")

@@ -10,7 +10,14 @@ from pathlib import Path
 
 MAX_CSV_BYTES = 64 * 1024 * 1024
 MAX_SAMPLES = 5_000_000
+MAX_CHANGE_NOTE_CHARS = 160
 FRAME_TIME_COLUMN = "frame_time_ms"
+METRIC_KINDS = {"generic", "cpu-presented", "displayed"}
+METRIC_LABELS = {
+    "generic": "Frametime (источник не указан)",
+    "cpu-presented": "CPU presented (MsBetweenPresents)",
+    "displayed": "Displayed (MsBetweenDisplayChange)",
+}
 FRAME_TIME_BUCKET_EDGES_MS = (
     1000.0 / 120.0,
     1000.0 / 60.0,
@@ -33,19 +40,35 @@ class Benchmark:
     frame_time_buckets: tuple[int, ...]
     game: str = ""
     scene: str = ""
+    metric_kind: str = "generic"
+    change_note: str = ""
+    setting_key: str = ""
+    setting_value: int | None = None
 
 
 def _nearest_rank(values: list[float], percentile: float) -> float:
     return values[max(0, math.ceil(percentile * len(values)) - 1)]
 
 
-def analyze_frame_times(name: str, frame_times_ms: list[float], *, game: str = "", scene: str = "") -> Benchmark:
+def analyze_frame_times(
+    name: str,
+    frame_times_ms: list[float],
+    *,
+    game: str = "",
+    scene: str = "",
+    metric_kind: str = "generic",
+    change_note: str = "",
+    setting_key: str = "",
+    setting_value: int | None = None,
+) -> Benchmark:
     if not frame_times_ms:
         raise ValueError("CSV must contain at least one frame time.")
     if len(frame_times_ms) > MAX_SAMPLES:
         raise ValueError(f"CSV contains more than {MAX_SAMPLES:,} frame samples.")
     if any(not math.isfinite(value) or value <= 0 or value > 10_000 for value in frame_times_ms):
         raise ValueError("Frame times must be finite values from 0 to 10,000 ms.")
+    if not isinstance(metric_kind, str) or metric_kind not in METRIC_KINDS:
+        raise ValueError("Неизвестный тип метрики frametime.")
     ordered = sorted(frame_times_ms)
     buckets = [0] * (len(FRAME_TIME_BUCKET_EDGES_MS) + 1)
     for value in ordered:
@@ -57,6 +80,10 @@ def analyze_frame_times(name: str, frame_times_ms: list[float], *, game: str = "
         name=name,
         game=game,
         scene=scene,
+        metric_kind=metric_kind,
+        change_note=change_note,
+        setting_key=setting_key,
+        setting_value=setting_value,
         sample_count=len(ordered),
         average_fps=1000 / mean,
         one_percent_low_fps=1000 / slow_average,
@@ -93,6 +120,115 @@ def load_frame_time_csv(path: Path) -> Benchmark:
     return analyze_frame_times(source.name, samples)
 
 
+def load_benchmark_csv(path: Path) -> tuple[Benchmark, tuple[str, ...]]:
+    """Import generic frame_time_ms or PresentMon per-frame CSV, retaining metric semantics."""
+    source = Path(path)
+    if source.stat().st_size > MAX_CSV_BYTES:
+        raise ValueError(f"CSV exceeds the {MAX_CSV_BYTES // (1024 * 1024)} MB safety limit.")
+    text = source.read_text(encoding="utf-8-sig")
+    first_line = text.splitlines()[0] if text.splitlines() else ""
+    candidates = []
+    for delimiter in (",", ";", "\t"):
+        fields = next(csv.reader([first_line], delimiter=delimiter), [])
+        normalized = {field.strip().casefold() for field in fields}
+        if FRAME_TIME_COLUMN in normalized or "msbetweendisplaychange" in normalized or "msbetweenpresents" in normalized:
+            candidates.append((delimiter, fields, normalized))
+    if not candidates:
+        raise ValueError("CSV must contain frame_time_ms, MsBetweenDisplayChange, or MsBetweenPresents.")
+    delimiter, headers, normalized = candidates[0]
+    lookup = {field.strip().casefold(): index for index, field in enumerate(headers)}
+    if len(lookup) != len(headers):
+        raise ValueError("CSV содержит повторяющиеся заголовки; нельзя безопасно выбрать колонку frametime.")
+    if FRAME_TIME_COLUMN.casefold() in lookup:
+        metric_kind, column = "generic", FRAME_TIME_COLUMN.casefold()
+    elif "msbetweendisplaychange" in lookup:
+        metric_kind, column = "displayed", "msbetweendisplaychange"
+    else:
+        metric_kind, column = "cpu-presented", "msbetweenpresents"
+    frame_type_index = lookup.get("frametype")
+    warnings: list[str] = []
+    if metric_kind == "cpu-presented" and frame_type_index is not None:
+        warnings.append("Для CPU presented исключены строки с FrameType, отличным от Application.")
+    elif metric_kind == "displayed" and frame_type_index is None:
+        warnings.append("В CSV нет FrameType: источник не позволяет отметить, какие отображённые кадры были сгенерированы.")
+    elif metric_kind == "cpu-presented" and frame_type_index is None:
+        warnings.append("В CSV нет FrameType: невозможно отметить generated-строки; при frame generation CPU-presented не равно displayed.")
+    elif metric_kind == "displayed":
+        warnings.append("Displayed intervals могут включать сгенерированные кадры; эта метрика отличается от CPU presented.")
+    elif metric_kind == "cpu-presented":
+        warnings.append("PresentMon не предоставил MsBetweenDisplayChange; импортирован CPU presented, он может отличаться от отображённого frametime.")
+    samples: list[float] = []
+    dropped_invalid = 0
+    dropped_malformed = 0
+    dropped_type = 0
+    data_rows = 0
+    saw_non_application = False
+    for line_number, row in enumerate(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter), start=1):
+        if line_number == 1:
+            continue
+        data_rows += 1
+        if len(row) != len(headers):
+            dropped_malformed += 1
+            continue
+        if frame_type_index is not None:
+            frame_type = row[frame_type_index].strip().casefold() if len(row) > frame_type_index else ""
+            normalized_frame_type = frame_type.replace("-", "_").replace(" ", "_")
+            if normalized_frame_type not in {"", "application"}:
+                saw_non_application = True
+            if metric_kind == "cpu-presented" and frame_type != "application":
+                dropped_type += 1
+                continue
+            if metric_kind == "displayed" and normalized_frame_type not in {"application", "intel_xefg", "intel_xess_fg", "amd_afmf"}:
+                dropped_type += 1
+                continue
+        raw = row[lookup[column]].strip()
+        if not raw or raw.casefold() in {"na", "n/a", "-"}:
+            dropped_invalid += 1
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            # Some regional spreadsheet exports use decimal comma with semicolon/tab separators.
+            if delimiter != "," and raw.count(",") == 1 and "." not in raw:
+                try:
+                    value = float(raw.replace(",", "."))
+                except ValueError:
+                    dropped_invalid += 1
+                    continue
+            else:
+                dropped_invalid += 1
+                continue
+        if not math.isfinite(value) or value <= 0 or value > 10_000:
+            dropped_invalid += 1
+            continue
+        samples.append(value)
+        if len(samples) > MAX_SAMPLES:
+            raise ValueError(f"CSV contains more than {MAX_SAMPLES:,} frame samples.")
+    if dropped_invalid:
+        share = dropped_invalid / data_rows * 100 if data_rows else 0.0
+        warnings.append(
+            f"Пропущено некорректных, пустых или отсутствующих значений: {dropped_invalid} "
+            f"из {data_rows} строк ({share:.1f}%)."
+        )
+    if dropped_malformed:
+        share = dropped_malformed / data_rows * 100 if data_rows else 0.0
+        warnings.append(
+            f"Пропущено строк с неверным числом полей: {dropped_malformed} "
+            f"из {data_rows} строк ({share:.1f}%)."
+        )
+    if dropped_type:
+        share = dropped_type / data_rows * 100 if data_rows else 0.0
+        warnings.append(
+            f"Пропущено строк с неизвестным или неподходящим FrameType: {dropped_type} "
+            f"из {data_rows} строк ({share:.1f}%)."
+        )
+    if metric_kind == "generic" and saw_non_application:
+        warnings.append("В CSV есть не-Application FrameType, но generic-колонка frame_time_ms не позволяет определить их frametime; строки не отфильтрованы автоматически.")
+    if not samples:
+        raise ValueError("В выбранном столбце CSV нет пригодных значений frametime.")
+    return analyze_frame_times(source.name, samples, metric_kind=metric_kind), tuple(warnings)
+
+
 def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
     fps_delta = after.average_fps - before.average_fps
     fps_percent = (fps_delta / before.average_fps * 100) if before.average_fps else 0.0
@@ -101,6 +237,26 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
     sample_delta = abs(before.sample_count - after.sample_count) / max(before.sample_count, after.sample_count)
     sample_warning = "⚠ Число кадров отличается более чем на 5%; сравнение распределений менее надёжно.\n\n" if sample_delta > 0.05 else ""
     context_warning = ""
+    metric_warning = ""
+    notes = ""
+    if before.change_note or after.change_note:
+        notes = (
+            "Заметки к прогонам (введены вручную; это контекст, не доказательство причины):\n"
+            f"  A: {before.change_note or 'не указано'}\n"
+            f"  B: {after.change_note or 'не указано'}\n\n"
+        )
+    settings = ""
+    if before.setting_key or after.setting_key:
+        settings = (
+            "Снимок разрешённой настройки Skyrim (только контекст; путь к INI не сохранён):\n"
+            f"  A: {before.setting_key + '=' + str(before.setting_value) if before.setting_key else 'не снят'}\n"
+            f"  B: {after.setting_key + '=' + str(after.setting_value) if after.setting_key else 'не снят'}\n\n"
+        )
+    if before.metric_kind != after.metric_kind:
+        metric_warning = (
+            f"⚠ Типы frametime различаются: {METRIC_LABELS.get(before.metric_kind, before.metric_kind)} → "
+            f"{METRIC_LABELS.get(after.metric_kind, after.metric_kind)}. Числа A/B не следует считать прямым сравнением.\n\n"
+        )
     if before.game != after.game or before.scene != after.scene:
         context_warning = "⚠ Метки игры или сцены различаются; эти прогоны могут быть несопоставимы.\n\n"
     elif not before.game or not before.scene:
@@ -116,6 +272,11 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
         bucket_rows.append(f"  {label}: A {a_share:.1f}% → B {b_share:.1f}% ({b_share - a_share:+.1f} п.п.)")
     return (
         "Сравниваются две выборки; это само по себе не доказывает эффект настройки.\n"
+        f"Метрика A: {METRIC_LABELS.get(before.metric_kind, before.metric_kind)}\n"
+        f"Метрика B: {METRIC_LABELS.get(after.metric_kind, after.metric_kind)}\n"
+        + notes
+        + settings
+        + metric_warning
         + context_warning
         + f"Baseline (A): {before.name} ({before.sample_count:,} кадров)\n"
         f"  Средний FPS: {before.average_fps:.1f} · 1% low: {before.one_percent_low_fps:.1f} · p99 frametime: {before.p99_frame_time_ms:.2f} ms\n\n"
@@ -137,6 +298,7 @@ def export_comparison_csv(before: Benchmark, after: Benchmark) -> str:
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(("metric", "baseline_a", "variant_b", "delta_b_minus_a", "unit"))
+    writer.writerow(("frame_time_metric_kind", before.metric_kind, after.metric_kind, "" if before.metric_kind == after.metric_kind else "different", "label"))
     rows = (
         ("sample_count", before.sample_count, after.sample_count, after.sample_count - before.sample_count, "frames"),
         ("average_fps", before.average_fps, after.average_fps, after.average_fps - before.average_fps, "fps"),
@@ -161,8 +323,9 @@ def export_comparison_json(before: Benchmark, after: Benchmark) -> str:
     """Export machine-readable aggregate comparison without source names or paths."""
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "baseline_a": {
+                "frame_time_metric_kind": before.metric_kind,
                 "sample_count": before.sample_count,
                 "average_fps": before.average_fps,
                 "one_percent_low_fps": before.one_percent_low_fps,
@@ -173,6 +336,7 @@ def export_comparison_json(before: Benchmark, after: Benchmark) -> str:
                 "frame_time_bucket_counts": list(before.frame_time_buckets),
             },
             "variant_b": {
+                "frame_time_metric_kind": after.metric_kind,
                 "sample_count": after.sample_count,
                 "average_fps": after.average_fps,
                 "one_percent_low_fps": after.one_percent_low_fps,

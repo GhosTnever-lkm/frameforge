@@ -13,11 +13,12 @@ from frameforge.core.apply import apply_grass_distance, apply_profile_setting, b
 from frameforge.core.backup import create_byte_backup, restore_from_backup
 from frameforge.core.benchmark import (
     Benchmark, FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks,
-    export_comparison_csv, export_comparison_json, load_frame_time_csv,
+    export_comparison_csv, export_comparison_json, load_benchmark_csv, load_frame_time_csv,
 )
 from frameforge.core.benchmark_store import BenchmarkStore, MAX_HISTORY, SCHEMA_VERSION
 from frameforge.core.safety import SafetyError, get_documents_root, validate_config_path
 from frameforge.core.scanner import parse_libraryfolders
+from frameforge.core.settings_snapshot import read_allowed_setting_snapshot
 
 
 class FrameForgeCoreTests(unittest.TestCase):
@@ -361,6 +362,150 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertEqual(run.one_percent_low_fps, 20)
         self.assertEqual(run.p99_frame_time_ms, 10)
 
+    def test_presentmon_import_prefers_displayed_metric_and_skips_missing_values(self):
+        path = Path(self.temp.name) / "presentmon.csv"
+        path.write_text(
+            "Application,MsBetweenPresents,FrameType,MsBetweenDisplayChange\n"
+            "game.exe,16.0,Application,8.0\n"
+            "game.exe,8.0,Intel XeSS-FG,8.0\n"
+            "game.exe,NA,Application,NA\n",
+            encoding="utf-8",
+        )
+        run, warnings = load_benchmark_csv(path)
+        self.assertEqual(run.metric_kind, "displayed")
+        self.assertEqual(run.sample_count, 2)
+        self.assertTrue(any("сгенерированные кадры" in warning for warning in warnings))
+        self.assertTrue(any("Пропущено некорректных" in warning for warning in warnings))
+
+    def test_generic_metric_has_priority_and_csv_headers_are_case_insensitive(self):
+        path = Path(self.temp.name) / "metric-priority.csv"
+        path.write_text(
+            "FRaME_TiMe_Ms,msbetweendisplaychange,FRAMETYPE\n"
+            "16.0,8.0,Application\n"
+            "20.0,4.0,Intel_XEFG\n",
+            encoding="utf-8",
+        )
+        run, warnings = load_benchmark_csv(path)
+        self.assertEqual(run.metric_kind, "generic")
+        self.assertEqual(run.sample_count, 2)
+        self.assertEqual(run.median_frame_time_ms, 16.0)
+        self.assertTrue(any("не отфильтрованы автоматически" in warning for warning in warnings))
+
+    def test_presentmon_generated_frame_types_accept_official_underscore_values(self):
+        path = Path(self.temp.name) / "presentmon-frame-types.csv"
+        path.write_text(
+            "MsBetweenDisplayChange,FrameType\n8.0,Intel_XEFG\n8.0,AMD_AFMF\n16.0,Application\n",
+            encoding="utf-8",
+        )
+        run, _ = load_benchmark_csv(path)
+        self.assertEqual(run.metric_kind, "displayed")
+        self.assertEqual(run.sample_count, 3)
+
+    def test_generic_import_warns_if_generated_frame_types_cannot_be_filtered(self):
+        path = Path(self.temp.name) / "generic-with-frame-types.csv"
+        path.write_text("frame_time_ms,FrameType\n16.0,Application\n8.0,Intel_XEFG\n", encoding="utf-8")
+        run, warnings = load_benchmark_csv(path)
+        self.assertEqual(run.metric_kind, "generic")
+        self.assertEqual(run.sample_count, 2)
+        self.assertTrue(any("не отфильтрованы автоматически" in warning for warning in warnings))
+
+    def test_presentmon_cpu_presented_filters_generated_frame_types(self):
+        path = Path(self.temp.name) / "presentmon-cpu.csv"
+        path.write_text(
+            "MsBetweenPresents,FrameType\n16.0,Application\n8.0,AMD AFMF\n12.0,Unknown\n",
+            encoding="utf-8",
+        )
+        run, warnings = load_benchmark_csv(path)
+        self.assertEqual(run.metric_kind, "cpu-presented")
+        self.assertEqual(run.sample_count, 1)
+        self.assertTrue(any("исключены строки" in warning for warning in warnings))
+        self.assertTrue(any("неподходящим FrameType: 2" in warning for warning in warnings))
+
+    def test_presentmon_import_supports_semicolon_decimal_comma(self):
+        path = Path(self.temp.name) / "regional.csv"
+        path.write_text("MsBetweenDisplayChange;FrameType\n16,5;Application\n", encoding="utf-8")
+        run, _ = load_benchmark_csv(path)
+        self.assertEqual(run.sample_count, 1)
+        self.assertEqual(run.median_frame_time_ms, 16.5)
+
+    def test_presentmon_semicolon_delimiter_wins_over_comma_in_other_header_text(self):
+        path = Path(self.temp.name) / "quoted-header.csv"
+        path.write_text(
+            'FrameType;MsBetweenDisplayChange;"note, with comma"\n'
+            'Application;16.5;"ok, fine"\n',
+            encoding="utf-8",
+        )
+        run, _ = load_benchmark_csv(path)
+        self.assertEqual(run.metric_kind, "displayed")
+        self.assertEqual(run.sample_count, 1)
+        self.assertEqual(run.median_frame_time_ms, 16.5)
+
+    def test_import_reports_fraction_of_rows_skipped_by_frame_type(self):
+        path = Path(self.temp.name) / "frame-type-drop-rate.csv"
+        path.write_text(
+            "MsBetweenPresents,FrameType\n"
+            + "16.0,Application\n"
+            + "8.0,AMD_AFMF\n" * 3,
+            encoding="utf-8",
+        )
+        run, warnings = load_benchmark_csv(path)
+        self.assertEqual(run.sample_count, 1)
+        drop_warning = next(w for w in warnings if "неподходящим FrameType" in w)
+        self.assertIn("3 из 4 строк (75.0%)", drop_warning)
+
+    def test_import_reports_malformed_row_count_and_share(self):
+        path = Path(self.temp.name) / "malformed.csv"
+        path.write_text(
+            "MsBetweenDisplayChange,FrameType\n"
+            "16.0,Application\n"
+            "8.0\n"
+            "20.0,Application\n",
+            encoding="utf-8",
+        )
+        run, warnings = load_benchmark_csv(path)
+        self.assertEqual(run.sample_count, 2)
+        malformed_warning = next(w for w in warnings if "неверным числом полей" in w)
+        self.assertIn("1 из 3 строк (33.3%)", malformed_warning)
+
+    def test_presentmon_import_rejects_file_over_size_limit(self):
+        path = Path(self.temp.name) / "too-large.csv"
+        path.write_text("MsBetweenDisplayChange\n16.0\n", encoding="utf-8")
+        with patch("frameforge.core.benchmark.MAX_CSV_BYTES", 1):
+            with self.assertRaisesRegex(ValueError, "safety limit"):
+                load_benchmark_csv(path)
+
+    def test_import_rejects_ambiguous_comma_decimal_row_in_comma_delimited_csv(self):
+        path = Path(self.temp.name) / "ambiguous-comma.csv"
+        path.write_text("MsBetweenDisplayChange\n16,67\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "нет пригодных значений"):
+            load_benchmark_csv(path)
+
+    def test_benchmark_comparison_warns_when_metric_kinds_differ(self):
+        before = analyze_frame_times("before", [16], metric_kind="cpu-presented")
+        after = analyze_frame_times("after", [8], metric_kind="displayed")
+        self.assertIn("Типы frametime различаются", compare_benchmarks(before, after))
+
+    def test_benchmark_comparison_shows_user_notes_without_causal_claim(self):
+        before = analyze_frame_times("before", [16], change_note="Тени: высокие")
+        after = analyze_frame_times("after", [15], change_note="Тени: средние")
+        report = compare_benchmarks(before, after)
+        self.assertIn("A: Тени: высокие", report)
+        self.assertIn("B: Тени: средние", report)
+        self.assertIn("не доказательство причины", report)
+
+    def test_benchmark_comparison_shows_allowlisted_setting_snapshot_as_context(self):
+        before = analyze_frame_times("before", [16], setting_key="fGrassStartFadeDistance", setting_value=7000)
+        after = analyze_frame_times("after", [15], setting_key="iMinGrassSize", setting_value=60)
+        report = compare_benchmarks(before, after)
+        self.assertIn("fGrassStartFadeDistance=7000", report)
+        self.assertIn("iMinGrassSize=60", report)
+        self.assertIn("путь к INI не сохранён", report)
+        self.assertIn("не доказывает причину", report)
+
+    def test_allowed_setting_snapshot_returns_only_key_and_value(self):
+        self.skyrim_ini.write_bytes(self.skyrim_ini_original + b"[Grass]\nUnknownPersonalValue=secret\n")
+        self.assertEqual(read_allowed_setting_snapshot(self.skyrim_ini), ("iMinGrassSize", 20))
+
     def test_benchmark_exposes_frame_time_distribution_buckets(self):
         run = analyze_frame_times("distribution", [4, *FRAME_TIME_BUCKET_EDGES_MS])
         self.assertEqual(run.frame_time_buckets, (1, 1, 1, 1, 1, 1))
@@ -404,7 +549,8 @@ class FrameForgeCoreTests(unittest.TestCase):
 
     def test_benchmark_export_contains_aggregates_without_names_or_raw_frames(self):
         before = analyze_frame_times("C:\\private\\before.csv", [10.0, 11.0, 12.0], game="Cyberpunk 2077", scene="Night City / save 42")
-        after = analyze_frame_times("D:\\secret\\after.csv", [9.0, 10.0, 120.0], game="Cyberpunk 2077", scene="Night City / save 43")
+        before = Benchmark(**(before.__dict__ | {"change_note": "LOCAL_ONLY C:\\Users\\private\\settings.ini", "setting_key": "iMinGrassSize", "setting_value": 40}))
+        after = analyze_frame_times("D:\\secret\\after.csv", [9.0, 10.0, 120.0], game="Cyberpunk 2077", scene="Night City / save 43", change_note="another local note")
         csv_export = export_comparison_csv(before, after)
         json_export = export_comparison_json(before, after)
         for export in (csv_export, json_export):
@@ -414,11 +560,17 @@ class FrameForgeCoreTests(unittest.TestCase):
             self.assertNotIn("D:\\secret", export)
             self.assertNotIn("Cyberpunk 2077", export)
             self.assertNotIn("Night City", export)
+            self.assertNotIn("LOCAL_ONLY", export)
+            self.assertNotIn("local note", export)
+            self.assertNotIn("iMinGrassSize", export)
+            self.assertNotIn("LOCAL_ONLY", export)
             self.assertNotIn("\nframe_time_ms\n", export)
         self.assertIn("average_fps", csv_export)
+        self.assertIn("frame_time_metric_kind", csv_export)
         self.assertIn("frame_time_bucket_5_share", csv_export)
         data = json.loads(json_export)
-        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(data["baseline_a"]["frame_time_metric_kind"], "generic")
         self.assertEqual(data["baseline_a"]["frame_time_bucket_counts"], list(before.frame_time_buckets))
         self.assertEqual(data["variant_b"]["sample_count"], 3)
         self.assertEqual(data["causal_claim"], "not_established_by_two_runs")
@@ -454,11 +606,12 @@ class FrameForgeCoreTests(unittest.TestCase):
     def test_benchmark_history_roundtrip_omits_source_paths_and_raw_samples(self):
         path = Path(self.temp.name) / "benchmarks.json"
         store = BenchmarkStore(path)
-        run = analyze_frame_times("benchmark.csv", [10, 15, 25])
+        run = analyze_frame_times("benchmark.csv", [10, 15, 25], change_note="Тени: высокие → средние")
         store.save([run])
         raw = path.read_text(encoding="utf-8")
         self.assertNotIn(str(self.temp.name), raw)
         self.assertNotIn("frame_times", raw)
+        self.assertIn("Тени: высокие", raw)
         self.assertEqual(store.load(), [run])
 
     def test_benchmark_history_v1_migrates_legacy_rows_without_rewriting_until_save(self):
@@ -466,7 +619,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         legacy = analyze_frame_times("legacy.csv", [10, 12])
         document = {
             "schema_version": 1,
-            "runs": [{key: value for key, value in (legacy.__dict__ | {"frame_time_buckets": list(legacy.frame_time_buckets)}).items() if key not in {"game", "scene"}}],
+            "runs": [{key: value for key, value in (legacy.__dict__ | {"frame_time_buckets": list(legacy.frame_time_buckets)}).items() if key not in {"game", "scene", "change_note"}}],
         }
         path.write_text(json.dumps(document), encoding="utf-8")
         store = BenchmarkStore(path)
@@ -475,14 +628,68 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 1)
         store.save(loaded)
         legacy_after_save = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(legacy_after_save["schema_version"], 1)
-        self.assertNotIn("game", legacy_after_save["runs"][0])
-        self.assertNotIn("scene", legacy_after_save["runs"][0])
+        self.assertEqual(legacy_after_save["schema_version"], 5)
+        self.assertIn("game", legacy_after_save["runs"][0])
+        self.assertEqual(legacy_after_save["runs"][0]["metric_kind"], "generic")
+        self.assertEqual(legacy_after_save["runs"][0]["change_note"], "")
+        self.assertEqual(legacy_after_save["runs"][0]["setting_key"], "")
+        self.assertIsNone(legacy_after_save["runs"][0]["setting_value"])
         tagged = Benchmark(**(loaded[0].__dict__ | {"game": "Skyrim", "scene": "Whiterun · High"}))
         store.save([tagged])
         migrated = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 2)
+        self.assertEqual(migrated["schema_version"], 5)
         self.assertEqual((store.load()[0].game, store.load()[0].scene), ("Skyrim", "Whiterun · High"))
+
+    def test_benchmark_history_v2_migrates_tagged_runs(self):
+        path = Path(self.temp.name) / "benchmarks.json"
+        run = analyze_frame_times("legacy.csv", [10, 12], game="Skyrim", scene="Whiterun")
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"metric_kind", "change_note"}}
+        path.write_text(json.dumps({"schema_version": 2, "runs": [row]}), encoding="utf-8")
+        loaded = BenchmarkStore(path).load()
+        self.assertEqual(loaded[0].metric_kind, "generic")
+        self.assertEqual(loaded[0].change_note, "")
+        self.assertEqual((loaded[0].game, loaded[0].scene), ("Skyrim", "Whiterun"))
+
+    def test_benchmark_history_v3_migrates_metric_and_adds_empty_note(self):
+        path = Path(self.temp.name) / "benchmarks.json"
+        run = analyze_frame_times("legacy.csv", [10, 12], game="Skyrim", scene="Whiterun", metric_kind="displayed")
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key != "change_note"}
+        row_with_note = row | {"name": "legacy-with-note.csv", "change_note": "preserve this local note"}
+        path.write_text(json.dumps({"schema_version": 3, "runs": [row, row_with_note]}), encoding="utf-8")
+        loaded = BenchmarkStore(path).load()
+        self.assertEqual(loaded[0].metric_kind, "displayed")
+        self.assertEqual(loaded[0].change_note, "")
+        self.assertEqual(loaded[1].change_note, "preserve this local note")
+        self.assertEqual((loaded[0].setting_key, loaded[0].setting_value), ("", None))
+
+    def test_benchmark_history_rejects_invalid_change_note(self):
+        store = BenchmarkStore(Path(self.temp.name) / "benchmarks.json")
+        base = analyze_frame_times("run.csv", [10, 12])
+        with self.assertRaisesRegex(ValueError, "Заметка к замеру"):
+            store.save([Benchmark(**(base.__dict__ | {"change_note": "N" * 161}))])
+        with self.assertRaisesRegex(ValueError, "Заметка к замеру"):
+            store.save([Benchmark(**(base.__dict__ | {"change_note": "line 1\nline 2"}))])
+
+    def test_benchmark_history_roundtrips_only_allowlisted_setting_pairs(self):
+        store = BenchmarkStore(Path(self.temp.name) / "benchmarks.json")
+        base = analyze_frame_times("run.csv", [10, 12], setting_key="iMinGrassSize", setting_value=60)
+        store.save([base])
+        self.assertEqual(store.load(), [base])
+        for key, value in (("UnknownSetting", 5), ([], 5), ("iMinGrassSize", True), ("iMinGrassSize", -1), ("iMinGrassSize", 100_001), ("", 10)):
+            with self.subTest(key=key, value=value):
+                invalid = Benchmark(**(base.__dict__ | {"setting_key": key, "setting_value": value}))
+                with self.assertRaisesRegex(ValueError, "Снимок настройки"):
+                    store.save([invalid])
+
+    def test_benchmark_history_v4_migrates_with_empty_setting_snapshot(self):
+        path = Path(self.temp.name) / "benchmarks.json"
+        run = analyze_frame_times("v4.csv", [10, 12], metric_kind="displayed", change_note="updated grass")
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"setting_key", "setting_value"}}
+        path.write_text(json.dumps({"schema_version": 4, "runs": [row]}), encoding="utf-8")
+        loaded = BenchmarkStore(path).load()
+        self.assertEqual(loaded[0].metric_kind, "displayed")
+        self.assertEqual(loaded[0].change_note, "updated grass")
+        self.assertEqual((loaded[0].setting_key, loaded[0].setting_value), ("", None))
 
     def test_benchmark_history_rejects_malformed_v1_rows_and_boolean_version(self):
         path = Path(self.temp.name) / "benchmarks.json"

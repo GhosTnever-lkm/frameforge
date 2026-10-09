@@ -9,22 +9,24 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QMainWindow, QMessageBox, QPushButton,
     QScrollArea, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from .. import __version__
 from ..catalog import GUIDE, GUIDE_GAMES, GUIDES, GAMES
 from ..core.apply import apply_profile_setting, build_profile_bytes, make_diff, read_profile_setting
 from ..core.benchmark import (
-    Benchmark, compare_benchmarks, export_comparison_csv,
-    export_comparison_json, load_frame_time_csv,
+    Benchmark, METRIC_LABELS, compare_benchmarks, export_comparison_csv,
+    export_comparison_json, load_benchmark_csv,
 )
 from ..core.benchmark_store import BenchmarkStore
 from ..core.backup import restore_from_backup, sha256
 from ..core.config_finder import find_skyrim_config
 from ..core.profiles import TUNING_PROFILES
 from ..core.safety import SafetyError
+from ..core.settings_snapshot import read_allowed_setting_snapshot
 from ..core.scanner import detect_skyrim_installs, system_snapshot
 from .benchmark_chart import FrameTimeChart
 
@@ -90,7 +92,7 @@ class MainWindow(QMainWindow):
         safety = QLabel("ЛОКАЛЬНО\nТолько выбранные изменения\nБез античит-твиков")
         safety.setObjectName("safety")
         side.addWidget(safety)
-        version = QLabel("v0.6.0 · MIT")
+        version = QLabel(f"v{__version__} · MIT")
         version.setObjectName("muted")
         side.addWidget(version)
 
@@ -324,11 +326,11 @@ class MainWindow(QMainWindow):
         title = QLabel("Замеры до и после")
         title.setStyleSheet("font-size:15pt;font-weight:700")
         layout.addWidget(title)
-        note = QLabel("FrameForge анализирует CSV с колонкой frame_time_ms — время каждого кадра в миллисекундах. Захват выполняет внешняя программа; FrameForge ничего не внедряет в игру и не показывает оверлей. Используй одинаковую сцену, разрешение и условия.")
+        note = QLabel("FrameForge анализирует CSV с frame_time_ms или PresentMon (MsBetweenDisplayChange / MsBetweenPresents). Тип метрики сохраняется; сравнение разных типов помечается как несопоставимое. Захват выполняет внешняя программа; FrameForge ничего не внедряет в игру и не показывает оверлей. Используй одинаковую сцену, разрешение и условия.")
         note.setWordWrap(True)
         note.setObjectName("muted")
         layout.addWidget(note)
-        privacy_note = QLabel("История хранится на этом компьютере в %LOCALAPPDATA%\\FrameForge\\benchmarks.json. Сохраняются имя CSV, игра/сцена и сводные метрики; исходный CSV и его путь не сохраняются. Метки не включаются в экспорт.")
+        privacy_note = QLabel("История хранится на этом компьютере в %LOCALAPPDATA%\\FrameForge\\benchmarks.json. Сохраняются имя CSV, игра/сцена, заметка об изменении, сводные метрики и только выбранный снимок разрешённого параметра Skyrim; исходный CSV и путь к INI не сохраняются. Заметки, снимки и метки остаются локальными и не включаются в экспорт.")
         privacy_note.setObjectName("muted")
         privacy_note.setWordWrap(True)
         layout.addWidget(privacy_note)
@@ -345,6 +347,16 @@ class MainWindow(QMainWindow):
         self.benchmark_scene.setPlaceholderText("Сцена / карта / пресет; не вводи личные пути (до 120 символов)")
         self.benchmark_scene.setMaxLength(120)
         layout.addWidget(self.benchmark_scene)
+        change_note_label = QLabel("Заметка только к следующему замеру")
+        change_note_label.setObjectName("tagline")
+        layout.addWidget(change_note_label)
+        self.benchmark_change_note = QLineEdit()
+        self.benchmark_change_note.setPlaceholderText("Что изменил перед этим прогоном? Например: тени — высокие → средние (до 160 символов)")
+        self.benchmark_change_note.setMaxLength(160)
+        layout.addWidget(self.benchmark_change_note)
+        self.benchmark_include_setting = QCheckBox("Добавить снимок текущего разрешённого параметра Skyrim (только чтение; путь не сохраняется)")
+        self.benchmark_include_setting.setToolTip("Нужна выбранная папка настроек на странице «Оптимизатор». Сохраняется только имя параметра и его целое значение.")
+        layout.addWidget(self.benchmark_include_setting)
         self.benchmark_store = BenchmarkStore(app_data_dir() / "benchmarks.json")
         try:
             self.benchmark_runs: list[Benchmark] = self.benchmark_store.load()
@@ -387,17 +399,31 @@ class MainWindow(QMainWindow):
         chart_note.setObjectName("muted")
         chart_note.setWordWrap(True)
         layout.addWidget(chart_note)
-        sample = QLabel("Формат CSV: frame_time_ms\n16.6\n16.4\n17.2")
+        sample = QLabel("CSV: frame_time_ms (свой экспорт) или PresentMon с MsBetweenDisplayChange / MsBetweenPresents.")
         sample.setObjectName("muted")
         layout.addWidget(sample)
         return scroll
 
     def import_benchmark(self):
+        setting_key = ""
+        setting_value = None
         path, _ = QFileDialog.getOpenFileName(self, "Выбрать CSV с временем кадров", "", "CSV files (*.csv);;All files (*)")
         if not path:
             return
+        if self.benchmark_include_setting.isChecked():
+            if self.benchmark_game.currentData() != "The Elder Scrolls V: Skyrim Special Edition":
+                QMessageBox.warning(self, "Снимок настройки не добавлен", "Для снимка выбери The Elder Scrolls V: Skyrim Special Edition или сними флажок.")
+                return
+            if not self.config_path:
+                QMessageBox.warning(self, "Снимок настройки не добавлен", "Сначала выбери папку настроек на странице «Оптимизатор» или сними флажок.")
+                return
+            try:
+                setting_key, setting_value = read_allowed_setting_snapshot(self.config_path)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "Снимок настройки не добавлен", f"Не удалось безопасно прочитать разрешённый параметр. CSV не импортирован.\n{exc}")
+                return
         try:
-            run = load_frame_time_csv(Path(path))
+            run, warnings = load_benchmark_csv(Path(path))
             run = Benchmark(
                 name=run.name,
                 game=self.benchmark_game.currentData() or "",
@@ -410,10 +436,16 @@ class MainWindow(QMainWindow):
                 min_frame_time_ms=run.min_frame_time_ms,
                 max_frame_time_ms=run.max_frame_time_ms,
                 frame_time_buckets=run.frame_time_buckets,
+                metric_kind=run.metric_kind,
+                change_note=self.benchmark_change_note.text().strip(),
+                setting_key=setting_key,
+                setting_value=setting_value,
             )
         except (OSError, UnicodeError, ValueError, csv.Error) as exc:
             QMessageBox.warning(self, "CSV не загружен", str(exc))
             return
+        if warnings:
+            QMessageBox.information(self, "Тип метрики и обработка CSV", "\n".join(warnings))
         self.benchmark_runs.append(run)
         try:
             self.benchmark_store.save(self.benchmark_runs)
@@ -421,6 +453,8 @@ class MainWindow(QMainWindow):
             self.benchmark_runs.pop()
             QMessageBox.critical(self, "Замер не сохранён", f"Новый результат не добавлен в историю. Предыдущая история сохранена.\n{exc}")
             return
+        self.benchmark_change_note.clear()
+        self.benchmark_include_setting.setChecked(False)
         self._refresh_benchmark_history()
         if len(self.benchmark_runs) >= 2:
             self.benchmark_before.setCurrentIndex(len(self.benchmark_runs) - 2)
@@ -431,7 +465,9 @@ class MainWindow(QMainWindow):
         self.benchmark_list.clear()
         for run in self.benchmark_runs:
             label = " · ".join(part for part in (run.game or "Игра не указана", run.scene or "сцена не указана") if part)
-            self.benchmark_list.addItem(f"{run.name} · {label} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
+            note = f" · изменение: {run.change_note}" if run.change_note else ""
+            setting = f" · {run.setting_key}={run.setting_value}" if run.setting_key else ""
+            self.benchmark_list.addItem(f"{run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · {label}{note}{setting} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
         if not hasattr(self, "benchmark_before"):
             return
         previous_before = self.benchmark_before.currentData()
@@ -440,7 +476,8 @@ class MainWindow(QMainWindow):
             selector.blockSignals(True)
             selector.clear()
             for index, run in enumerate(self.benchmark_runs):
-                label = " · ".join(part for part in (run.name, run.game or "Игра не указана", run.scene or "") if part)
+                setting = f"{run.setting_key}={run.setting_value}" if run.setting_key else ""
+                label = " · ".join(part for part in (run.name, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.game or "Игра не указана", run.scene or "", run.change_note, setting) if part)
                 selector.addItem(label, index)
             selector.blockSignals(False)
         if self.benchmark_runs:

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.0 - 2026-10-09
+
+- Optionally attach a read-only snapshot of the selected allowlisted Skyrim setting to a benchmark; store only its key and integer value, never its INI path.
+- Show setting snapshots side by side in A/B reports as context, without causal claims; keep snapshots out of CSV/JSON exports.
+- Migrate benchmark history schemas v1–v4 into schema v5 with empty snapshot fields for older runs.
+- Keep the PresentMon import, local change note and Windows package/runtime improvements introduced in v0.7.0.
+
+## 0.7.0 - 2026-10-09
+
+- Make the PySide6 DLL and platform-plugin paths explicit so PyInstaller does not depend on unrelated runtime DLLs; CI launches the frozen app and checks the main window before packaging.
+- Import PresentMon per-frame CSV using `MsBetweenDisplayChange` or `MsBetweenPresents`, preserving the metric identity in local history and exports.
+- Detect comma, semicolon and tab delimiters; accept decimal comma only with semicolon/tab separated files.
+- Apply `FrameType` filters and show import warnings for skipped/missing samples and frame types, including the dropped-row share.
+- Keep a short, local-only note about the settings changed for each benchmark and show the notes side by side in A/B reports; never include them in exports.
+- Warn prominently when A/B runs use different frametime metrics; migrate history schemas v1–v3 into schema v4.
+- Build from an explicitly selected Python environment and smoke-test the executable extracted from the release archive in CI.
+
 ## 0.6.0 - 2026-10-09
 
 - Tag local benchmark runs with an optional game and scene/preset label; warn when A/B labels differ or are missing.
