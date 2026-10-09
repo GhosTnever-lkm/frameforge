@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.13.1 - 2026-10-09
+
+- Update the accessible name and description of each focused Baseline and Variant selector with the selected benchmark, including after a role swap.
+
 ## 1.13.0 - 2026-10-09
 
 - Add an accessible A/B role-swap button for selected benchmark runs; swapping clears the current report and export until the user explicitly compares again.

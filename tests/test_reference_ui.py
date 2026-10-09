@@ -311,6 +311,10 @@ class ReferenceRunUiTests(unittest.TestCase):
 
         self.assertEqual(self.window.benchmark_before.currentData(), 1)
         self.assertEqual(self.window.benchmark_after.currentData(), 0)
+        self.assertIn("after.csv", self.window.benchmark_before.accessibleName())
+        self.assertIn("before.csv", self.window.benchmark_after.accessibleName())
+        self.assertIn("Baseline (A)", self.window.benchmark_before.accessibleDescription())
+        self.assertIn("Variant (B)", self.window.benchmark_after.accessibleDescription())
         self.assertIsNone(self.window._last_benchmark_comparison)
         self.assertFalse(self.window.export_benchmark_button.isEnabled())
         self.assertTrue(self.window.benchmark_chart.isHidden())

@@ -840,11 +840,17 @@ class MainWindow(QMainWindow):
         ):
             index = selector.currentData(Qt.ItemDataRole.UserRole)
             if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
-                label.setText(f"{side}: нет выбранного замера")
+                status = f"{side}: нет выбранного замера"
+                label.setText(status)
+                selector.setAccessibleName(status)
+                selector.setAccessibleDescription("")
                 continue
             run = self.benchmark_runs[index]
             identity = " · ".join(("★ ЭТАЛОН" if run.is_reference else "", run.name, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.game or "Игра не указана", run.scene or "сцена не указана"))
-            label.setText(f"{side} #{index + 1:03d}: {identity}")
+            description = f"{side} #{index + 1:03d}: {identity}"
+            label.setText(description)
+            selector.setAccessibleName(f"{side}: {run.name}")
+            selector.setAccessibleDescription(description)
         self._update_swap_benchmark_pair_button()
 
     def _update_swap_benchmark_pair_button(self):
