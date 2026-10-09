@@ -4,6 +4,7 @@ import csv
 import io
 import math
 import json
+import statistics
 from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
@@ -322,6 +323,124 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
         f"Разница p99 frametime: {p99_delta:+.2f} ms ({'хуже' if p99_delta > 0 else 'лучше' if p99_delta < 0 else 'без изменений'})\n\n"
         "Разница между прогонами сама по себе не доказывает причину. Повтори оба варианта в одинаковой сцене, разрешении, пресете и условиях; при малом числе кадров результат менее устойчив."
     )
+
+
+GROUP_METRICS = (
+    ("average_fps", "Средний FPS по CSV", "FPS", True),
+    ("one_percent_low_fps", "1% low по CSV", "FPS", True),
+    ("p99_frame_time_ms", "p99 frametime по CSV", "мс", False),
+)
+
+
+def _quartile(values: list[float], fraction: float) -> float:
+    """Inclusive linear interpolation over per-run summary values."""
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * fraction
+    low = math.floor(position)
+    high = math.ceil(position)
+    if low == high:
+        return ordered[low]
+    weight = position - low
+    return ordered[low] * (1 - weight) + ordered[high] * weight
+
+
+def _validate_benchmark_groups(group_a: list[Benchmark], group_b: list[Benchmark] | None = None) -> None:
+    if len(group_a) < 3:
+        raise ValueError("Для группы A нужно не менее трёх отдельных CSV-замеров.")
+    if len({id(run) for run in group_a}) != len(group_a):
+        raise ValueError("Каждый отдельный CSV-замер можно добавить в группу только один раз.")
+    runs = list(group_a)
+    if group_b is not None:
+        if len(group_b) < 3:
+            raise ValueError("Для группы B нужно не менее трёх отдельных CSV-замеров.")
+        if len({id(run) for run in group_b}) != len(group_b):
+            raise ValueError("Каждый отдельный CSV-замер можно добавить в группу только один раз.")
+        if {id(run) for run in group_a}.intersection(id(run) for run in group_b):
+            raise ValueError("Один и тот же замер не может входить одновременно в группы A и B.")
+        runs.extend(group_b)
+    context = {(run.game, run.scene, run.metric_kind) for run in runs}
+    if len(context) != 1:
+        raise ValueError("Все замеры A/B должны иметь одинаковые игру, сцену и тип frametime.")
+    game, scene, _metric = next(iter(context))
+    if not game or not scene:
+        raise ValueError("Для сравнения повторов укажи одинаковые игру и сцену у каждого замера.")
+
+
+def summarize_benchmark_group(runs: list[Benchmark]) -> dict[str, dict[str, float]]:
+    """Summarize repeated per-CSV aggregate metrics; never pool raw frame samples."""
+    _validate_benchmark_groups(runs)
+    summary: dict[str, dict[str, float]] = {}
+    for key, _label, _unit, _higher_is_better in GROUP_METRICS:
+        values = [float(getattr(run, key)) for run in runs]
+        summary[key] = {
+            "median": statistics.median(values),
+            "q1": _quartile(values, 0.25),
+            "q3": _quartile(values, 0.75),
+        }
+    return summary
+
+
+def compare_benchmark_groups(group_a: list[Benchmark], group_b: list[Benchmark]) -> str:
+    """Compare medians and run-to-run IQRs with an explicit descriptive-only caveat."""
+    _validate_benchmark_groups(group_a, group_b)
+    summary_a = summarize_benchmark_group(group_a)
+    summary_b = summarize_benchmark_group(group_b)
+    report = [
+        f"Повторные замеры: A — {len(group_a)} CSV, B — {len(group_b)} CSV.",
+        f"Условия по меткам: {group_a[0].game} · {group_a[0].scene} · {METRIC_LABELS.get(group_a[0].metric_kind, group_a[0].metric_kind)}.",
+        "Значения ниже — медианы показателей, рассчитанных отдельно для каждого CSV; это не pooled-показатели группы (включая 1% low и p99).",
+        "Каждый CSV имеет одинаковый вес независимо от числа кадров/длительности; разброс и IQR описательные.",
+        "При 3–4 прогонах IQR особенно чувствителен к одному замеру; рассматривай его вместе со всеми отдельными CSV.",
+        "",
+    ]
+    for key, label, unit, _higher_is_better in GROUP_METRICS:
+        a = summary_a[key]
+        b = summary_b[key]
+        delta = b["median"] - a["median"]
+        overlap = max(a["q1"], b["q1"]) <= min(a["q3"], b["q3"])
+        report.extend((
+            f"{label} ({unit}):",
+            f"  A: медиана {a['median']:.2f}; межквартильный диапазон {a['q1']:.2f}–{a['q3']:.2f}",
+            f"  B: медиана {b['median']:.2f}; межквартильный диапазон {b['q1']:.2f}–{b['q3']:.2f}",
+            f"  Медиана B−A: {delta:+.2f} {unit}; диапазоны {'перекрываются' if overlap else 'не перекрываются'}.",
+            "",
+        ))
+    report.append(
+        "Это описательное сравнение выбранных повторов, не тест статистической значимости и не доказательство причинного эффекта. "
+        "FrameForge не хранит порядок/сессию, настройки окружения, температуру, фоновые процессы или исходные кадры. "
+        "Повторяй A и B в сопоставимой сцене и чередуй порядок прогонов; не интерпретируй небольшие различия без учёта разброса."
+    )
+    return "\n".join(report)
+
+
+def export_group_comparison_csv(group_a: list[Benchmark], group_b: list[Benchmark]) -> str:
+    _validate_benchmark_groups(group_a, group_b)
+    summaries = (summarize_benchmark_group(group_a), summarize_benchmark_group(group_b))
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(("metric", "group_a_median", "group_a_q1", "group_a_q3", "group_b_median", "group_b_q1", "group_b_q3", "median_b_minus_a", "unit"))
+    for key, _label, unit, _higher_is_better in GROUP_METRICS:
+        a, b = summaries
+        writer.writerow((key, a[key]["median"], a[key]["q1"], a[key]["q3"], b[key]["median"], b[key]["q1"], b[key]["q3"], b[key]["median"] - a[key]["median"], unit))
+    writer.writerow(("run_count", len(group_a), "", "", len(group_b), "", "", len(group_b) - len(group_a), "runs"))
+    writer.writerow(("causal_claim", "", "", "", "", "", "", "not_established_by_repeated_runs", "note"))
+    return "\ufeff" + output.getvalue()
+
+
+def export_group_comparison_json(group_a: list[Benchmark], group_b: list[Benchmark]) -> str:
+    _validate_benchmark_groups(group_a, group_b)
+    summary_a = summarize_benchmark_group(group_a)
+    summary_b = summarize_benchmark_group(group_b)
+    return json.dumps({
+        "schema_version": 1,
+        "method": "median_and_inclusive_iqr_of_per_csv_summaries",
+        "baseline_a": {"run_count": len(group_a), "metrics": summary_a},
+        "variant_b": {"run_count": len(group_b), "metrics": summary_b},
+        "frame_time_metric_kind": group_a[0].metric_kind,
+        "causal_claim": "not_established_by_repeated_runs",
+    }, ensure_ascii=False, indent=2)
 
 
 def export_comparison_csv(before: Benchmark, after: Benchmark) -> str:

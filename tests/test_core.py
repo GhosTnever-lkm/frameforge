@@ -13,7 +13,9 @@ from frameforge.core.apply import apply_grass_distance, apply_profile_setting, b
 from frameforge.core.backup import create_byte_backup, restore_from_backup
 from frameforge.core.benchmark import (
     Benchmark, FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks,
-    export_comparison_csv, export_comparison_json, load_benchmark_csv, load_frame_time_csv,
+    compare_benchmark_groups, export_comparison_csv, export_comparison_json,
+    export_group_comparison_csv, export_group_comparison_json, load_benchmark_csv,
+    load_frame_time_csv, summarize_benchmark_group,
 )
 from frameforge.core.benchmark_store import BenchmarkStore, MAX_HISTORY, SCHEMA_VERSION
 from frameforge.core.safety import SafetyError, get_documents_root, validate_config_path
@@ -567,6 +569,47 @@ class FrameForgeCoreTests(unittest.TestCase):
         after = analyze_frame_times("variant.csv", [10.0] * 96)
         report = compare_benchmarks(before, after)
         self.assertNotIn("отличается более чем на 5%", report)
+
+    def test_repeated_benchmark_groups_use_median_and_iqr_of_csv_summaries(self):
+        def run(name, times):
+            base = analyze_frame_times(name, times, game="Counter-Strike 2", scene="Dust II / benchmark", metric_kind="displayed")
+            return base
+        group_a = [run("private-a.csv", [value] * 10) for value in (10, 20, 30)]
+        group_b = [run("private-b.csv", [value] * 10) for value in (8, 10, 12)]
+        summary = summarize_benchmark_group(group_a)
+        self.assertAlmostEqual(summary["average_fps"]["median"], 1000 / 20)
+        report = compare_benchmark_groups(group_a, group_b)
+        self.assertIn("A — 3 CSV, B — 3 CSV", report)
+        self.assertIn("межквартильный диапазон", report)
+        self.assertIn("не тест статистической значимости", report)
+        self.assertIn("1% low по CSV", report)
+        self.assertIn("не pooled-показатели группы", report)
+        self.assertIn("прогонах IQR особенно чувствителен", report)
+
+    def test_repeated_group_requires_three_runs_and_matching_context(self):
+        runs = [analyze_frame_times(str(index), [10, 10], game="CS2", scene="map") for index in range(3)]
+        with self.assertRaisesRegex(ValueError, "не менее трёх"):
+            summarize_benchmark_group(runs[:2])
+        mismatched = runs[:2] + [analyze_frame_times("other", [10, 10], game="CS2", scene="other map")]
+        with self.assertRaisesRegex(ValueError, "одинаковые игру, сцену и тип"):
+            summarize_benchmark_group(mismatched)
+        with self.assertRaisesRegex(ValueError, "одновременно"):
+            compare_benchmark_groups(runs, runs)
+        with self.assertRaisesRegex(ValueError, "только один раз"):
+            summarize_benchmark_group([runs[0], runs[0], runs[1]])
+
+    def test_repeated_group_exports_omit_private_context_and_raw_data(self):
+        group_a = [analyze_frame_times(f"C:\\secret\\run-{i}.csv", [10, 11, 12], game="Private Game", scene="private save", change_note="local note") for i in range(3)]
+        group_b = [analyze_frame_times(f"D:\\secret\\run-{i}.csv", [8, 9, 10], game="Private Game", scene="private save", change_note="other note") for i in range(3)]
+        csv_export = export_group_comparison_csv(group_a, group_b)
+        json_export = export_group_comparison_json(group_a, group_b)
+        for payload in (csv_export, json_export):
+            for private in ("secret", "run-0", "Private Game", "private save", "local note", "\nframe_time_ms\n"):
+                self.assertNotIn(private, payload)
+        data = json.loads(json_export)
+        self.assertEqual(data["baseline_a"]["run_count"], 3)
+        self.assertEqual(data["causal_claim"], "not_established_by_repeated_runs")
+        self.assertEqual(set(data["baseline_a"]["metrics"]["average_fps"]), {"median", "q1", "q3"})
 
     def test_benchmark_export_contains_aggregates_without_names_or_raw_frames(self):
         before = analyze_frame_times("C:\\private\\before.csv", [10.0, 11.0, 12.0], game="Cyberpunk 2077", scene="Night City / save 42")

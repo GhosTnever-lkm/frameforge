@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0 - 2026-10-09
+
+- Add temporary A/B groups for repeated benchmark CSVs, requiring at least three separate runs per group and matching game, scene and frametime metric labels.
+- Summarize each group's per-CSV aggregate results with median and inclusive interquartile range; do not pool frame samples or infer statistical significance/causality.
+- Export aggregate-only repeated comparison CSV/JSON without filenames, user labels, notes, or frame data.
+- Keep temporary groups in the current app session only; benchmark history remains on schema v6.
+
 ## 0.9.0 - 2026-10-09
 
 - Add optional per-game checklists for manually changed settings to benchmark runs and show the differences as context in A/B reports, without causal claims.

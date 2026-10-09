@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+    QApplication, QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
     QScrollArea, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -18,8 +18,9 @@ from .. import __version__
 from ..catalog import GUIDE, GUIDE_CHECKLISTS, GUIDE_CHECKLIST_LABELS, GUIDE_GAMES, GUIDES, GAMES
 from ..core.apply import apply_profile_setting, build_profile_bytes, make_diff, read_profile_setting
 from ..core.benchmark import (
-    Benchmark, METRIC_LABELS, compare_benchmarks, export_comparison_csv,
-    export_comparison_json, load_benchmark_csv,
+    Benchmark, METRIC_LABELS, compare_benchmark_groups, compare_benchmarks,
+    export_comparison_csv, export_comparison_json, export_group_comparison_csv,
+    export_group_comparison_json, load_benchmark_csv,
 )
 from ..core.benchmark_store import BenchmarkStore
 from ..core.backup import restore_from_backup, sha256
@@ -376,7 +377,32 @@ class MainWindow(QMainWindow):
             self.benchmark_runs = []
             QMessageBox.warning(self, "История замеров недоступна", f"Создана пустая история в памяти приложения. Исходный файл не изменён.\n{exc}")
         self.benchmark_list = QListWidget()
+        self.benchmark_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._benchmark_group_a: set[int] = set()
+        self._benchmark_group_b: set[int] = set()
+        self._last_benchmark_comparison = None
         layout.addWidget(self.benchmark_list)
+        group_help = QLabel("Повторные замеры: выдели не менее 3 CSV в каждой группе. Группы временные и сбросятся при перезапуске.")
+        group_help.setObjectName("muted")
+        group_help.setWordWrap(True)
+        layout.addWidget(group_help)
+        group_row = QHBoxLayout()
+        self.assign_group_a_button = QPushButton("Выбранные → группа A")
+        self.assign_group_a_button.clicked.connect(lambda: self._assign_selected_benchmark_group("A"))
+        group_row.addWidget(self.assign_group_a_button)
+        self.assign_group_b_button = QPushButton("Выбранные → группа B")
+        self.assign_group_b_button.clicked.connect(lambda: self._assign_selected_benchmark_group("B"))
+        group_row.addWidget(self.assign_group_b_button)
+        self.remove_group_button = QPushButton("Убрать выбранные из групп")
+        self.remove_group_button.clicked.connect(self._remove_selected_benchmark_group)
+        group_row.addWidget(self.remove_group_button)
+        layout.addLayout(group_row)
+        self.benchmark_groups_status = QLabel("Группа A: 0 · Группа B: 0")
+        self.benchmark_groups_status.setObjectName("tagline")
+        layout.addWidget(self.benchmark_groups_status)
+        self.compare_groups_button = QPushButton("Сравнить повторные замеры A/B")
+        self.compare_groups_button.clicked.connect(self.compare_benchmark_groups_selection)
+        layout.addWidget(self.compare_groups_button)
         import_button = QPushButton("Импортировать CSV замера")
         import_button.clicked.connect(self.import_benchmark)
         layout.addWidget(import_button)
@@ -399,18 +425,18 @@ class MainWindow(QMainWindow):
         self._refresh_benchmark_history()
         self.benchmark_report = QTextEdit()
         self.benchmark_report.setReadOnly(True)
-        self.benchmark_report.setPlaceholderText("Импортируй два CSV, чтобы сравнить результаты.")
+        self.benchmark_report.setPlaceholderText("Импортируй два CSV для обычного сравнения или назначь не менее трёх замеров на каждую группу A/B.")
         self.benchmark_report.setMinimumHeight(200)
         layout.addWidget(self.benchmark_report)
-        chart_title = QLabel("Доля кадров по диапазонам времени (%, A/B и число кадров N показаны в легенде)")
-        chart_title.setObjectName("tagline")
-        layout.addWidget(chart_title)
+        self.benchmark_chart_title = QLabel("Доля кадров по диапазонам времени (%, A/B и число кадров N показаны в легенде)")
+        self.benchmark_chart_title.setObjectName("tagline")
+        layout.addWidget(self.benchmark_chart_title)
         self.benchmark_chart = FrameTimeChart()
         layout.addWidget(self.benchmark_chart)
-        chart_note = QLabel("Интервалы слева направо: <8,333; [8,333–16,667); [16,667–33,333); [33,333–50); [50–100); ≥100 мс. Классификация использует точные границы 1000/FPS. При малом N распределение менее устойчиво; разница между прогонами сама по себе не доказывает причину.")
-        chart_note.setObjectName("muted")
-        chart_note.setWordWrap(True)
-        layout.addWidget(chart_note)
+        self.benchmark_chart_note = QLabel("Интервалы слева направо: <8,333; [8,333–16,667); [16,667–33,333); [33,333–50); [50–100); ≥100 мс. Классификация использует точные границы 1000/FPS. При малом N распределение менее устойчиво; разница между прогонами сама по себе не доказывает причину.")
+        self.benchmark_chart_note.setObjectName("muted")
+        self.benchmark_chart_note.setWordWrap(True)
+        layout.addWidget(self.benchmark_chart_note)
         sample = QLabel("CSV: frame_time_ms (свой экспорт) или PresentMon с MsBetweenDisplayChange / MsBetweenPresents.")
         sample.setObjectName("muted")
         layout.addWidget(sample)
@@ -481,13 +507,18 @@ class MainWindow(QMainWindow):
 
     def _refresh_benchmark_history(self):
         self.benchmark_list.clear()
-        for run in self.benchmark_runs:
+        for index, run in enumerate(self.benchmark_runs):
             label = " · ".join(part for part in (run.game or "Игра не указана", run.scene or "сцена не указана") if part)
             note = f" · изменение: {run.change_note}" if run.change_note else ""
             setting = f" · {run.setting_key}={run.setting_value}" if run.setting_key else ""
             manual = ", ".join(GUIDE_CHECKLIST_LABELS.get(item, item) for item in run.manual_changes)
             manual = f" · чек-лист: {manual}" if manual else ""
-            self.benchmark_list.addItem(f"{run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · {label}{note}{setting}{manual} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
+            group_tag = "A · " if id(run) in self._benchmark_group_a else "B · " if id(run) in self._benchmark_group_b else ""
+            item = QListWidgetItem(f"[{group_tag or '—'}] {run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · {label}{note}{setting}{manual} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            self.benchmark_list.addItem(item)
+        if hasattr(self, "benchmark_groups_status"):
+            self.benchmark_groups_status.setText(f"Группа A: {len(self._benchmark_group_a)} · Группа B: {len(self._benchmark_group_b)}")
         if not hasattr(self, "benchmark_before"):
             return
         previous_before = self.benchmark_before.currentData()
@@ -529,6 +560,47 @@ class MainWindow(QMainWindow):
         before, after = selection
         self.benchmark_report.setPlainText(compare_benchmarks(before, after))
         self.benchmark_chart.set_runs(before, after)
+        self.benchmark_chart_title.show()
+        self.benchmark_chart.show()
+        self.benchmark_chart_note.show()
+        self._last_benchmark_comparison = ("pair", before, after)
+        self.export_benchmark_button.setEnabled(True)
+
+    def _selected_benchmark_runs(self) -> list[Benchmark]:
+        indexes = sorted({item.data(Qt.ItemDataRole.UserRole) for item in self.benchmark_list.selectedItems()})
+        return [self.benchmark_runs[index] for index in indexes if isinstance(index, int) and 0 <= index < len(self.benchmark_runs)]
+
+    def _assign_selected_benchmark_group(self, group: str):
+        runs = self._selected_benchmark_runs()
+        if not runs:
+            QMessageBox.information(self, "Ничего не выбрано", "Выдели замеры в списке истории, используя Ctrl или Shift.")
+            return
+        target = self._benchmark_group_a if group == "A" else self._benchmark_group_b
+        other = self._benchmark_group_b if group == "A" else self._benchmark_group_a
+        for run in runs:
+            other.discard(id(run))
+            target.add(id(run))
+        self._refresh_benchmark_history()
+
+    def _remove_selected_benchmark_group(self):
+        for run in self._selected_benchmark_runs():
+            self._benchmark_group_a.discard(id(run))
+            self._benchmark_group_b.discard(id(run))
+        self._refresh_benchmark_history()
+
+    def compare_benchmark_groups_selection(self):
+        group_a = [run for run in self.benchmark_runs if id(run) in self._benchmark_group_a]
+        group_b = [run for run in self.benchmark_runs if id(run) in self._benchmark_group_b]
+        try:
+            report = compare_benchmark_groups(group_a, group_b)
+        except ValueError as exc:
+            QMessageBox.information(self, "Не удалось сравнить группы", str(exc))
+            return
+        self.benchmark_report.setPlainText(report)
+        self.benchmark_chart.hide()
+        self.benchmark_chart_title.hide()
+        self.benchmark_chart_note.hide()
+        self._last_benchmark_comparison = ("groups", group_a, group_b)
         self.export_benchmark_button.setEnabled(True)
 
     def _selected_benchmark_pair(self) -> tuple[Benchmark, Benchmark] | None:
@@ -543,10 +615,12 @@ class MainWindow(QMainWindow):
         return self.benchmark_runs[before_index], self.benchmark_runs[after_index]
 
     def export_benchmark_selection(self):
-        selection = self._selected_benchmark_pair()
-        if selection is None:
-            return
-        before, after = selection
+        comparison = self._last_benchmark_comparison
+        if comparison is None:
+            selection = self._selected_benchmark_pair()
+            if selection is None:
+                return
+            comparison = ("pair", *selection)
         path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Экспорт сводки сравнения",
@@ -561,7 +635,12 @@ class MainWindow(QMainWindow):
         if target.suffix.casefold() != expected_suffix:
             target = target.with_suffix(expected_suffix)
         try:
-            payload = export_comparison_json(before, after) if want_json else export_comparison_csv(before, after)
+            if comparison[0] == "groups":
+                _kind, group_a, group_b = comparison
+                payload = export_group_comparison_json(group_a, group_b) if want_json else export_group_comparison_csv(group_a, group_b)
+            else:
+                _kind, before, after = comparison
+                payload = export_comparison_json(before, after) if want_json else export_comparison_csv(before, after)
             target.write_text(payload, encoding="utf-8-sig" if not want_json else "utf-8", newline="")
         except OSError as exc:
             QMessageBox.critical(self, "Не удалось экспортировать", f"Сводка не сохранена.\n{exc}")
