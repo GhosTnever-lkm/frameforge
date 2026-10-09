@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -217,6 +218,18 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertIn(b"fGrassStartFadeDistance=3000", self.config.read_bytes())
         restore_from_backup(backup2, self.config)
         self.assertEqual(self.config.read_bytes(), self.original)
+
+    def test_backup_uses_a_unique_name_when_timestamps_collide(self):
+        fixed_now = datetime(2026, 10, 10, tzinfo=timezone.utc)
+        with patch("frameforge.core.backup.datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = fixed_now
+            first = create_byte_backup(self.config, self.backups)
+            second = create_byte_backup(self.config, self.backups)
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.exists())
+        self.assertTrue(second.exists())
+        self.assertEqual(first.read_bytes(), self.original)
+        self.assertEqual(second.read_bytes(), self.original)
 
     def test_restore_rejects_backup_outside_backups_directory(self):
         forged = Path(self.temp.name) / "skyrimprefs-forged.ini.bak"

@@ -49,12 +49,21 @@ def create_byte_backup(config: Path, backup_dir: Path) -> Path:
     safe = validate_config_path(config)
     backup_dir = _validate_backup_directory(backup_dir, create=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    backup = backup_dir / f"frameforge-{safe.stem.casefold()}-{timestamp}.ini.bak"
     original = safe.read_bytes()
-    with backup.open("xb") as stream:
-        stream.write(original)
-        stream.flush()
-        os.fsync(stream.fileno())
+    base_name = f"frameforge-{safe.stem.casefold()}-{timestamp}"
+    for collision_index in range(10_000):
+        suffix = "" if collision_index == 0 else f"-{collision_index}"
+        backup = backup_dir / f"{base_name}{suffix}.ini.bak"
+        try:
+            with backup.open("xb") as stream:
+                stream.write(original)
+                stream.flush()
+                os.fsync(stream.fileno())
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise FileExistsError("Could not reserve a unique FrameForge backup filename.")
     if sha256(backup.read_bytes()) != sha256(original):
         backup.unlink(missing_ok=True)
         raise OSError("Backup verification failed; the config was not changed.")

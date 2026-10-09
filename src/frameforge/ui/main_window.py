@@ -2340,11 +2340,22 @@ class MainWindow(QMainWindow):
         except (SafetyError, OSError, ValueError) as exc:
             QMessageBox.critical(self, "Откат не выполнен", str(exc))
 
+    def _dispose_game_overlay(self):
+        """Close the unowned top-level panel before the Qt application exits."""
+        self._hide_game_overlay()
+        self.game_overlay.close()
+        self.game_overlay.deleteLater()
+
+    def closeEvent(self, event):
+        self._dispose_game_overlay()
+        super().closeEvent(event)
+
 
 def run_app():
     application = QApplication.instance() or QApplication([])
     application.setQuitOnLastWindowClosed(False)
     window = MainWindow()
+    application.aboutToQuit.connect(window._dispose_game_overlay)
     tray = QSystemTrayIcon(window.windowIcon(), window)
     tray.setToolTip("FrameForge · игровые профили и FPS-бенчмарк")
     menu = QMenu()
