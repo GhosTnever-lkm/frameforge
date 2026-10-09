@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1 - 2026-10-09
+
+- Show anonymous per-CSV benchmark rows and accepted frame counts in repeated A/B reports to make run-to-run spread visible.
+- Keep group CSV/JSON exports aggregate-only; clarify that row order follows benchmark history and is not capture chronology.
+
 ## 1.0.0 - 2026-10-09
 
 - Add temporary A/B groups for repeated benchmark CSVs, requiring at least three separate runs per group and matching game, scene and frametime metric labels.

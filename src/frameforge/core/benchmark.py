@@ -407,9 +407,21 @@ def compare_benchmark_groups(group_a: list[Benchmark], group_b: list[Benchmark])
             f"  Медиана B−A: {delta:+.2f} {unit}; диапазоны {'перекрываются' if overlap else 'не перекрываются'}.",
             "",
         ))
+    for group_label, group in (("A", group_a), ("B", group_b)):
+        report.extend((
+            f"Отдельные прогоны группы {group_label} (агрегаты CSV, порядок следует истории замеров):",
+            "  № | n_frames | average FPS | 1% low FPS | p99 frametime (мс)",
+        ))
+        for index, run in enumerate(group, start=1):
+            report.append(
+                f"  {index} | {run.sample_count} | {run.average_fps:.2f} | "
+                f"{run.one_percent_low_fps:.2f} | {run.p99_frame_time_ms:.2f}"
+            )
+        report.append("")
     report.append(
         "Это описательное сравнение выбранных повторов, не тест статистической значимости и не доказательство причинного эффекта. "
-        "FrameForge не хранит порядок/сессию, настройки окружения, температуру, фоновые процессы или исходные кадры. "
+        "Номер строки следует порядку истории и не подтверждает хронологию захвата; n_frames — число принятых кадров, не длительность. "
+        "FrameForge не хранит настройки окружения, температуру, фоновые процессы или исходные кадры. "
         "Повторяй A и B в сопоставимой сцене и чередуй порядок прогонов; не интерпретируй небольшие различия без учёта разброса."
     )
     return "\n".join(report)

@@ -585,6 +585,14 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertIn("1% low по CSV", report)
         self.assertIn("не pooled-показатели группы", report)
         self.assertIn("прогонах IQR особенно чувствителен", report)
+        self.assertIn("№ | n_frames | average FPS | 1% low FPS | p99 frametime", report)
+        self.assertIn("  1 | 10 | 100.00 | 100.00 | 10.00", report)
+        self.assertIn("n_frames — число принятых кадров, не длительность", report)
+        self.assertNotIn("private-a.csv", report)
+        run_rows = [line for line in report.splitlines() if line.startswith("  ") and line.split("|")[0].strip().isdigit()]
+        self.assertEqual(len(run_rows), 6)
+        self.assertIn("  2 | 10 | 50.00 | 50.00 | 20.00", run_rows)
+        self.assertEqual(report, compare_benchmark_groups(group_a, group_b))
 
     def test_repeated_group_requires_three_runs_and_matching_context(self):
         runs = [analyze_frame_times(str(index), [10, 10], game="CS2", scene="map") for index in range(3)]
@@ -610,6 +618,8 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertEqual(data["baseline_a"]["run_count"], 3)
         self.assertEqual(data["causal_claim"], "not_established_by_repeated_runs")
         self.assertEqual(set(data["baseline_a"]["metrics"]["average_fps"]), {"median", "q1", "q3"})
+        self.assertNotIn("per_run", json_export)
+        self.assertNotIn("average_fps_by_run", json_export)
 
     def test_benchmark_export_contains_aggregates_without_names_or_raw_frames(self):
         before = analyze_frame_times("C:\\private\\before.csv", [10.0, 11.0, 12.0], game="Cyberpunk 2077", scene="Night City / save 42")
