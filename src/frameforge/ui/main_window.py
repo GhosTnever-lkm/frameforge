@@ -4,6 +4,7 @@ import json
 import csv
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import replace
 from datetime import datetime
@@ -238,10 +239,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.csgo_dark_sky)
         self.csgo_hide_sky = QCheckBox("Скрыть skybox (только локальная практика)")
         layout.addWidget(self.csgo_hide_sky)
-        apply_cfg = QPushButton("Создать профиль .cfg с backup")
+        apply_cfg = QPushButton("Сохранить игровой профиль и создать backup")
         apply_cfg.clicked.connect(self.write_csgo_profile)
         layout.addWidget(apply_cfg)
-        self.csgo_profile_status = QLabel("Выбери папку csgo/cfg, затем создай конфиг. В игре открой консоль и выполни: exec frameforge_fps")
+        self.csgo_profile_status = QLabel("Настрой профиль и нажми «Запустить игру»: FrameForge сохранит CFG с backup и попросит Steam запустить CS:GO Legacy. Для проверки прироста сравни одинаковую сцену до и после.")
         self.csgo_profile_status.setObjectName("muted")
         self.csgo_profile_status.setWordWrap(True)
         layout.addWidget(self.csgo_profile_status)
@@ -261,11 +262,11 @@ class MainWindow(QMainWindow):
         self.csgo_cfg_dir = folder
         self.csgo_cfg_label.setText(str(folder))
 
-    def write_csgo_profile(self):
+    def write_csgo_profile(self) -> bool:
         folder = self.csgo_cfg_dir
         if folder is None or not folder.is_dir():
             QMessageBox.information(self, "FrameForge", "Сначала выбери папку cfg игры.")
-            return
+            return False
         fps_cfg = folder / "frameforge_fps.cfg"
         fps_lines = [
             "// FrameForge Counter-Strike: Global Offensive Legacy performance profile",
@@ -278,11 +279,21 @@ class MainWindow(QMainWindow):
             fps_lines.append("mat_disable_bloom 1")
         if self.csgo_blending.isChecked():
             fps_lines.append("mat_disable_fancy_blending 1")
+        if self.csgo_red_crosshair.isChecked():
+            fps_lines.extend((
+                "cl_crosshaircolor 5",
+                "cl_crosshaircolor_r 255",
+                "cl_crosshaircolor_g 64",
+                "cl_crosshaircolor_b 64",
+                "cl_crosshairusealpha 1",
+                "cl_crosshairalpha 255",
+            ))
         files = {fps_cfg: "\n".join(fps_lines) + "\n"}
         menu_lines = [
             "// FrameForge in-game console menu for CS:GO Legacy",
-            "alias ff_menu \"echo ================= FRAMEFORGE =================; echo ff_perf - apply FPS profile; echo ff_night - dark sky (local practice); echo ff_skyoff - hide skybox (local practice); echo ff_skyrestore - restore skybox; echo ================================================\"",
+            "alias ff_menu \"echo ================= FRAMEFORGE =================; echo ff_perf - apply FPS profile; echo ff_accessibility - red high-contrast crosshair; echo ff_night - dark sky (local practice); echo ff_skyoff - hide skybox (local practice); echo ff_skyrestore - restore skybox; echo ================================================\"",
             "alias ff_perf \"exec frameforge_fps\"",
+            "alias ff_accessibility \"exec frameforge_accessibility\"",
             "alias ff_night \"exec frameforge_practice_sky\"",
             "alias ff_skyoff \"sv_cheats 1; r_drawskybox 0\"",
             "alias ff_skyrestore \"r_drawskybox 1\"",
@@ -290,6 +301,17 @@ class MainWindow(QMainWindow):
             "echo FrameForge console menu ready. Type ff_menu for commands.",
         ]
         files[folder / "frameforge_menu.cfg"] = "\n".join(menu_lines) + "\n"
+        if self.csgo_red_crosshair.isChecked():
+            files[folder / "frameforge_accessibility.cfg"] = (
+                "// FrameForge high-contrast red crosshair preset for CS:GO Legacy\n"
+                "// Highlights the crosshair, not enemy player models.\n"
+                "cl_crosshaircolor 5\n"
+                "cl_crosshaircolor_r 255\n"
+                "cl_crosshaircolor_g 64\n"
+                "cl_crosshaircolor_b 64\n"
+                "cl_crosshairusealpha 1\n"
+                "cl_crosshairalpha 255\n"
+            )
         if self.csgo_dark_sky.isChecked() or self.csgo_hide_sky.isChecked():
             sky_lines = [
                 "// FrameForge CS:GO Legacy local-practice sky options",
@@ -302,18 +324,11 @@ class MainWindow(QMainWindow):
                 sky_lines.append("r_drawskybox 0")
             sky_lines.extend(["// Restore skybox with: r_drawskybox 1", "// Restore default sky by changing map or restarting the local server."])
             files[folder / "frameforge_practice_sky.cfg"] = "\n".join(sky_lines) + "\n"
-        marker_start = "// >>> FrameForge managed CS:GO Legacy menu >>>"
-        marker_end = "// <<< FrameForge managed CS:GO Legacy menu <<<"
         autoexec = folder / "autoexec.cfg"
         existing_autoexec = autoexec.read_text(encoding="utf-8", errors="replace") if autoexec.exists() else ""
-        managed_block = "\n".join((marker_start, "exec frameforge_menu", "ff_menu", marker_end))
-        if marker_start in existing_autoexec and marker_end in existing_autoexec:
-            before, remainder = existing_autoexec.split(marker_start, 1)
-            _, after = remainder.split(marker_end, 1)
-            autoexec_text = before.rstrip() + "\n\n" + managed_block + after
-        else:
-            autoexec_text = existing_autoexec.rstrip() + ("\n\n" if existing_autoexec.strip() else "") + managed_block + "\n"
-        files[autoexec] = autoexec_text
+        autoexec_text = self._build_csgo_managed_autoexec(existing_autoexec, self.csgo_startup_menu.isChecked())
+        if autoexec_text:
+            files[autoexec] = autoexec_text
         backups = []
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         try:
@@ -326,8 +341,29 @@ class MainWindow(QMainWindow):
                 temporary.write_text(contents, encoding="utf-8", newline="\n")
                 os.replace(temporary, destination)
             self.csgo_profile_status.setText("Создано: " + ", ".join(path.name for path in files) + (" · backup: " + ", ".join(backups) if backups else " · существующие пользовательские файлы не затронуты"))
+            return True
         except OSError as exc:
             QMessageBox.critical(self, "Не удалось записать конфиг", str(exc))
+            return False
+
+    @staticmethod
+    def _build_csgo_managed_autoexec(existing: str, enabled: bool) -> str:
+        marker_start = "// >>> FrameForge managed CS:GO Legacy menu >>>"
+        marker_end = "// <<< FrameForge managed CS:GO Legacy menu <<<"
+        lines = [marker_start, "exec frameforge_menu", "ff_menu", "toggleconsole", marker_end] if enabled else []
+        block = "\n".join(lines)
+        if marker_start in existing and marker_end in existing:
+            before, remainder = existing.split(marker_start, 1)
+            _, after = remainder.split(marker_end, 1)
+            result = before.rstrip()
+            if block:
+                result += "\n\n" + block
+            result += after
+            return result.lstrip("\n")
+        result = existing.rstrip()
+        if block:
+            result += ("\n\n" if result else "") + block + "\n"
+        return result
 
     def _update_overlay_guide(self, game_name: str):
         if not hasattr(self, "overlay_tip"):
@@ -342,14 +378,33 @@ class MainWindow(QMainWindow):
             self.choose_csgo_cfg()
         if self.csgo_cfg_dir is None or not self.csgo_cfg_dir.is_dir():
             return
-        self.write_csgo_profile()
-        if not (self.csgo_cfg_dir / "autoexec.cfg").exists():
+        confirm = QMessageBox.question(
+            self,
+            "Сохранить профиль и запустить игру?",
+            "FrameForge создаст резервные копии файлов CFG и сохранит выбранный профиль в папке CS:GO Legacy. Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        if not self.write_csgo_profile():
             return
         try:
-            subprocess.Popen(["steam", "-applaunch", "4465480", "+exec", "frameforge_menu", "+toggleconsole"])
-        except OSError:
-            QDesktopServices.openUrl(QUrl("steam://run/4465480/+exec%20frameforge_menu/+toggleconsole"))
+            self._start_csgo_via_steam()
+        except OSError as exc:
+            QMessageBox.critical(self, "Не удалось запустить игру", f"Профиль сохранён, но запуск через Steam не удался: {exc}")
+            return
+        startup_message = "Меню настроено на автозагрузку; " if self.csgo_startup_menu.isChecked() else "Автозагрузка меню отключена; "
+        self.csgo_profile_status.setText("Профиль сохранён, игра передана Steam. " + startup_message + "фактический запуск и FPS нужно проверить в игре.")
         self.hide()
+
+    @staticmethod
+    def _start_csgo_via_steam() -> None:
+        steam = shutil.which("steam")
+        if steam:
+            subprocess.Popen([steam, "-applaunch", "4465480"])
+        elif not QDesktopServices.openUrl(QUrl("steam://run/4465480")):
+            raise OSError("Не удалось передать ссылку Steam для запуска CS:GO Legacy")
 
     def _open_overlay_page(self, page: int):
         self.show_page(page)
@@ -558,9 +613,12 @@ class MainWindow(QMainWindow):
         self.csgo_dynamic_lights = QCheckBox("Снизить нагрузку от динамического освещения")
         self.csgo_bloom = QCheckBox("Отключить bloom")
         self.csgo_blending = QCheckBox("Упростить fancy blending")
+        self.csgo_red_crosshair = QCheckBox("Красный контрастный прицел (меняет прицел, не модели врагов)")
+        self.csgo_startup_menu = QCheckBox("Загружать меню FrameForge при старте CS:GO Legacy")
+        self.csgo_startup_menu.setChecked(True)
         self.csgo_dark_sky = QCheckBox("Ночное небо · локальная практика")
         self.csgo_hide_sky = QCheckBox("Скрыть небо · локальная практика")
-        for row, check in enumerate((self.csgo_dynamic_lights, self.csgo_bloom, self.csgo_blending, self.csgo_dark_sky, self.csgo_hide_sky), 2):
+        for row, check in enumerate((self.csgo_dynamic_lights, self.csgo_bloom, self.csgo_blending, self.csgo_red_crosshair, self.csgo_startup_menu, self.csgo_dark_sky, self.csgo_hide_sky), 2):
             controls.addWidget(check, row, 0, 1, 2)
             check.stateChanged.connect(self._update_csgo_profile_preview)
         layout.addLayout(controls)
@@ -625,6 +683,8 @@ class MainWindow(QMainWindow):
         commands = [f"fps_max {self.csgo_fps_limit.currentData()}"]
         options = ((self.csgo_dynamic_lights, "r_dynamic 0"), (self.csgo_bloom, "mat_disable_bloom 1"), (self.csgo_blending, "mat_disable_fancy_blending 1"))
         commands.extend(command for check, command in options if check.isChecked())
+        if self.csgo_red_crosshair.isChecked():
+            commands.append("Красный контрастный прицел (не перекраска моделей)")
         if self.csgo_dark_sky.isChecked():
             commands.append("Локальная практика: тёмное небо")
         if self.csgo_hide_sky.isChecked():

@@ -116,3 +116,28 @@ Updated: 2026-10-09
 - CS:GO was already running before the generated launch options were applied and did not close through the normal window-close request. The in-game console startup path and any FPS change are therefore not confirmed in the live game. Baseline reported by the user is about 240 FPS; +20% (about 288 FPS) has not been measured and is not guaranteed. Do not advertise a minimum FPS gain.
 - Release/push, portfolio update, and announcement are pending successful CI and a clean in-game startup verification. The full mouse-driven HUD overlay is not implemented; the current in-game menu is a Source console text menu, with tuning performed in FrameForge.
 - GitHub CI run 37902424700: all 106 unit tests and compileall succeeded; packaging failed because the generated icon assets were untracked and absent from the checkout. Adding both PNG/ICO assets in follow-up commit before release.
+
+## Опубликовано — FrameForge v1.16.0
+
+- GitHub release: https://github.com/GhosTnever-lkm/frameforge/releases/tag/v1.16.0. В релизе есть Windows ZIP и SHA-256 sidecar; checksum проверенной публикации: `065a1765b47e5bc98400dcc621dfe40c4f9b919f649f4c67c99c4c2015797269`.
+- GitHub Actions main `37902668063` и tag/release `37902886450` прошли 106 тестов, compileall, Windows build и archive smoke. Первый запуск публикации выявил отсутствующие иконки; добавление ресурсов исправило packaging, tag workflow прошёл.
+- Профиль CS:GO Legacy использует обнаружение Steam appmanifest, настройки и CFG в папке игры, создание резервных копий и запуск через Steam с открытием консоли. В живом FrameForge подтверждено обнаружение `D:\SteamLibrary\steamapps\common\csgo legacy\csgo\cfg` и сохранение профиля. Опубликованный SHA-256 сверялся со sidecar.
+- Важно: интерфейс внутри игры пока Source console text menu; отдельный mouse-driven HUD не сделан. CS:GO уже был запущен до установки параметров, свежий запуск через FrameForge и появление меню в новой сессии не подтверждены. FPS до/после не замерен: целевые 288 FPS (+20% от сообщённых пользователем ~240) не достигнуты/не доказаны и не обещаются.
+- Профиль README обновлён коммитом `d9c9430`. Портфолио обновлено коммитом `1d8f127`, Pages run `37903415412` прошёл, публичная страница проверена; опубликован release `Portfolio v1.3.11`: https://github.com/GhosTnever-lkm/GhosTnever-lkm.github.io/releases/tag/v1.3.11.
+- Публичный Boosty-пост: https://boosty.to/azizazimov/posts/b1d94fbd-e449-43d5-84ec-ec6d42bee85f; теги: frameforge, оптимизация игр, cs:go legacy, бенчмарк. Рекламный и AI-content переключатели оставлены выключенными. Пост не утверждает гарантированный прирост FPS.
+
+## Подготовка — FrameForge v1.16.1 (2026-10-09)
+
+- Исправлена действующая страница «Игры»: красный контрастный прицел и автозагрузка игрового console-menu доступны переключателями в профиле CS:GO Legacy. Красный цвет прицела явно не назван перекраской моделей противников; поиск не подтвердил штатный CFG-переключатель для этого.
+- Перед записью CFG при запуске появляется подтверждение; заменяемые файлы сохраняются в backup. Переключатель автозагрузки убирает только помеченный FrameForge-блок autoexec и сохраняет пользовательские строки. Ошибки записи показываются и останавливают запуск; Steam можно запускать и при выключенной автозагрузке.
+- При включённой автозагрузке autoexec открывает игровую консоль для текстового меню. Это не мышиный HUD. Три новых теста autoexec проходят; core suite: 98 тестов, 4 symlink-теста пропущены по окружению. Полный GUI suite локально завершился Windows process abort после прохождения тестовых строк; нужен CI.
+- Версия 1.16.1 ещё не собрана и не опубликована. Нужны успешные CI/build, commit/tag/release. Свежий запуск CS:GO и FPS до/после не проверены; цель 288 FPS / +20% остаётся недоказанной.
+
+## Подготовка — FrameForge v1.16.1 (CI pending)
+
+- Добавлен практический red high-contrast crosshair preset (не перекраска врагов) и управляемая авто-загрузка текстового console-menu на текущей странице Games. Autoexec managed-block включает `toggleconsole` при включённом меню, чтобы его показать.
+- Исправлены write/launch ошибки CS:GO: подтверждение записи перед запуском, корректная установка/снятие только своего autoexec-блока, startup через appid, продолжение Steam launch при отключённом меню, статус фактического делегирования запуска. README и changelog обновлены.
+- Тесты: новые 3 autoexec unit tests pass; core 98 pass/4 symlink skip. Полный unittest discover завершился кодом `-1073740791` (Windows process abort после вывода успешных тестов), CI требуется для полного подтверждения.
+- Portable build собран отдельно `dist-v1.16.1/FrameForge-1.16.1-windows-x64.zip`, SHA-256 `3d46363a82016f29d2bf670e89308870c0fe3599d3b4659ffb968da829d7fbbd`; распакованный EXE стартовал с окном `FrameForge — Game Tuning Studio`. Windows UI Automation подтвердил оба новых чекбокса на странице «Игры».
+- В игровых бинарниках локальной CS:GO Legacy найдены `mat_disable_bloom`, `mat_disable_fancy_blending`, `r_dynamic`, sky toggles и RGB crosshair cvars. Цвет вражеских player models обычным CFG не подтверждён. Свежий запуск игры и FPS до/после не проведены; +20% / 288 FPS не подтверждены.
+- Версия ещё не запушена и не релизнута. Следующий шаг: коммит и GitHub CI; после зелёного CI — tag/release, портфолио и публикационный пост.

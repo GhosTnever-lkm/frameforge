@@ -1,11 +1,17 @@
 # Changelog
 
+## 1.16.1 - 2026-10-09
+
+- Add red high-contrast crosshair and optional startup loading for the CS:GO Legacy profile on the actual Games page.
+- Confirm before writing game configuration, make the managed autoexec menu toggle removable without changing personal lines, and continue launching Steam when auto-loading is disabled.
+- Clarify the actual Steam launch status and document that the red setting changes the crosshair, not enemy models.
+
 ## 1.16.0 - 2026-10-09
 
 - Detect CS:GO Legacy through Steam library manifests and show its actual `csgo/cfg` path automatically.
-- Replace the separate game overlay with an in-app tuning screen containing refresh-rate profiles, FPS caps, optional graphics toggles, and a live CFG preview.
-- Generate the selected in-game performance profile when launching CS:GO Legacy; the console menu loads the selected FPS profile.
-- Open the game's console with the profile menu on launch; preserve the existing `autoexec.cfg` content.
+- Replace the separate game overlay with an in-app tuning screen containing refresh-rate profiles, FPS caps, optional graphics and red high-contrast crosshair settings, and a live CFG preview.
+- Add an explicit confirmation before changing game configuration files, an option to remove only FrameForge's marked autoexec block, and clear Steam launch feedback.
+- Keep the existing `autoexec.cfg` content, load the selected profile through the game's console when autoexec is enabled, and document that CS:GO Legacy does not provide a normal CFG option to recolor enemy models.
 
 ## 1.15.0 - 2026-10-09
 
