@@ -458,6 +458,7 @@ class MainWindow(QMainWindow):
         self.benchmark_list.customContextMenuRequested.connect(self._show_benchmark_context_menu)
         self._benchmark_group_a: set[int] = set()
         self._benchmark_group_b: set[int] = set()
+        self._active_benchmark_baseline: Benchmark | None = None
         self._last_benchmark_comparison = None
         history_filter_row = QHBoxLayout()
         self.benchmark_history_filter = QLineEdit()
@@ -485,6 +486,11 @@ class MainWindow(QMainWindow):
         self.same_label_history_button.setEnabled(False)
         self.same_label_history_button.clicked.connect(self.show_selected_same_label_history)
         layout.addWidget(self.same_label_history_button)
+        self.compare_active_baseline_button = QPushButton("Сравнить с активной базой")
+        self.compare_active_baseline_button.setToolTip("Подставляет активную базу и выбранный прогон в A/B; отчёт строится только после нажатия «Сравнить».")
+        self.compare_active_baseline_button.setVisible(False)
+        self.compare_active_baseline_button.clicked.connect(self.compare_selected_with_active_baseline)
+        layout.addWidget(self.compare_active_baseline_button)
         reference_row = QHBoxLayout()
         self.reference_status = QLabel("Эталоны: 0/5 · закреплённые прогоны сохраняются сверх лимита истории")
         self.reference_status.setObjectName("muted")
@@ -769,6 +775,8 @@ class MainWindow(QMainWindow):
             manual = f" · чек-лист: {manual}" if manual else ""
             group_tag = "A · " if id(run) in self._benchmark_group_a else "B · " if id(run) in self._benchmark_group_b else ""
             reference_tag = "★ ЭТАЛОН · " if run.is_reference else ""
+            if run is self._active_benchmark_baseline:
+                reference_tag = "★ АКТИВНАЯ БАЗА · " + reference_tag
             item = QListWidgetItem(f"[{reference_tag}{group_tag or '—'}] {run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · {label}{note}{setting}{manual} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
             item.setData(Qt.ItemDataRole.UserRole, index)
             self.benchmark_list.addItem(item)
@@ -986,7 +994,62 @@ class MainWindow(QMainWindow):
         history_action.triggered.connect(lambda _checked=False, run_index=index: self.show_same_label_history(run_index))
         if not run.game.strip() or not run.scene.strip():
             history_action.setToolTip("Для поиска совпадений нужны заполненные метки игры и сцены.")
+        menu.addSeparator()
+        if run.is_reference:
+            baseline_action = menu.addAction(
+                "Снять активную базу" if run is self._active_benchmark_baseline else "Назначить активной базой на этот сеанс"
+            )
+            baseline_action.triggered.connect(lambda _checked=False, run_index=index: self.toggle_active_benchmark_baseline(run_index))
         menu.exec(self.benchmark_list.mapToGlobal(position))
+
+    def toggle_active_benchmark_baseline(self, index: int) -> bool:
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+            return False
+        run = self.benchmark_runs[index]
+        if not run.is_reference:
+            return False
+        selected = self.benchmark_list.selectedItems()
+        selected_index = selected[0].data(Qt.ItemDataRole.UserRole) if len(selected) == 1 else None
+        self._active_benchmark_baseline = None if self._active_benchmark_baseline is run else run
+        self._refresh_benchmark_history()
+        if isinstance(selected_index, int) and not isinstance(selected_index, bool) and selected_index < self.benchmark_list.count():
+            self.benchmark_list.setCurrentRow(selected_index)
+        self._update_reference_controls()
+        return True
+
+    def compare_selected_with_active_baseline(self) -> bool:
+        selected = self.benchmark_list.selectedItems()
+        baseline = self._active_benchmark_baseline
+        if baseline is None or not baseline.is_reference or not any(run is baseline for run in self.benchmark_runs):
+            self._active_benchmark_baseline = None
+            self._update_reference_controls()
+            return False
+        if len(selected) != 1:
+            return False
+        index = selected[0].data(Qt.ItemDataRole.UserRole)
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+            return False
+        variant = self.benchmark_runs[index]
+        if variant is baseline or variant.is_reference:
+            return False
+        baseline_index = next(position for position, run in enumerate(self.benchmark_runs) if run is baseline)
+        self.benchmark_before.blockSignals(True)
+        self.benchmark_after.blockSignals(True)
+        try:
+            self.benchmark_before.setCurrentIndex(baseline_index)
+            self.benchmark_after.setCurrentIndex(index)
+        finally:
+            self.benchmark_before.blockSignals(False)
+            self.benchmark_after.blockSignals(False)
+        self._last_benchmark_comparison = None
+        self.export_benchmark_button.setEnabled(False)
+        self.benchmark_report.setPlainText("Пара с активной базой подставлена. Нажми «Сравнить», чтобы построить новый отчёт и экспорт.")
+        self.benchmark_chart.hide()
+        self.benchmark_chart_title.hide()
+        self.benchmark_chart_note.hide()
+        self.benchmark_pair_search_status.setText("Активная база и выбранный прогон подставлены; отчёт ещё не построен.")
+        self._refresh_benchmark_pair_identities()
+        return True
 
     def same_label_history_rows(self, index: int) -> list[tuple[int, Benchmark]]:
         """Return exact-label history rows without claiming capture chronology."""
@@ -1224,6 +1287,26 @@ class MainWindow(QMainWindow):
             self.compare_previous_matching_button.setEnabled(len(selected) == 1)
         if hasattr(self, "same_label_history_button"):
             self.same_label_history_button.setEnabled(len(selected) == 1)
+        baseline = self._active_benchmark_baseline
+        if baseline is not None and (not baseline.is_reference or not any(run is baseline for run in self.benchmark_runs)):
+            self._active_benchmark_baseline = None
+            baseline = None
+        if hasattr(self, "compare_active_baseline_button"):
+            self.compare_active_baseline_button.setVisible(baseline is not None)
+            can_compare = False
+            same_baseline = False
+            if len(selected) == 1:
+                selected_index = selected[0].data(Qt.ItemDataRole.UserRole)
+                if isinstance(selected_index, int) and not isinstance(selected_index, bool) and 0 <= selected_index < len(self.benchmark_runs):
+                    selected_run = self.benchmark_runs[selected_index]
+                    same_baseline = selected_run is baseline
+                    can_compare = baseline is not None and not same_baseline and not selected_run.is_reference
+            self.compare_active_baseline_button.setEnabled(can_compare)
+            self.compare_active_baseline_button.setToolTip(
+                "Выбранный прогон уже является активной базой." if same_baseline else
+                "Выбери один обычный прогон; активная база подставится в A." if baseline is not None else
+                "Назначь закреплённый прогон активной базой через контекстное меню."
+            )
         if len(selected) != 1:
             self.toggle_reference_button.setEnabled(False)
             self.toggle_reference_button.setText("Выбери один замер для эталона")
@@ -1290,6 +1373,8 @@ class MainWindow(QMainWindow):
                 if any(run is new_run for run in updated):
                     group.add(new_id)
         self.benchmark_runs = updated
+        if not pinning and self._active_benchmark_baseline is old_run:
+            self._active_benchmark_baseline = None
         retained_ids = {id(run) for run in updated}
         self._benchmark_group_a.intersection_update(retained_ids)
         self._benchmark_group_b.intersection_update(retained_ids)

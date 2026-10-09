@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.0 - 2026-10-09
+
+- Let one pinned benchmark be marked as the active baseline for the current app session, with a visible history marker; unpinning it clears the session selection.
+- Add a shortcut to assign the active baseline and one selected ordinary run to A/B, while requiring an explicit Compare action before producing a report or export.
+- Keep the active selection out of stored history and exports; changing it does not change benchmark data.
+
 ## 1.10.0 - 2026-10-09
 
 - Show all benchmark runs with exactly matching game, scene and metric in a read-only history view, including pinned references; keep history schema and exports unchanged.

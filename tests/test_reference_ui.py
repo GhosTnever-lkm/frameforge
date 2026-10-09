@@ -174,11 +174,87 @@ class ReferenceRunUiTests(unittest.TestCase):
         self.assertEqual(self.window.benchmark_before.currentData(), 2)
 
         self.window.benchmark_list.setCurrentRow(2)
+        self.assertTrue(self.window.toggle_active_benchmark_baseline(2))
+        self.assertIs(self.window._active_benchmark_baseline, self.window.benchmark_runs[2])
         self.window.toggle_selected_reference()
         unpinned = self.window.benchmark_runs[2]
         self.assertFalse(unpinned.is_reference)
+        self.assertIsNone(self.window._active_benchmark_baseline)
         self.assertFalse(self.window.benchmark_store.load()[2].is_reference)
         self.assertIn(id(unpinned), self.window._benchmark_group_a)
+
+    def test_active_baseline_shortcut_assigns_pair_and_requires_explicit_compare(self):
+        runs = [
+            analyze_frame_times("reference.csv", [11.0] * 8, game="Skyrim", scene="Forest"),
+            analyze_frame_times("new.csv", [14.0] * 8, game="Skyrim", scene="Forest"),
+        ]
+        runs[0] = replace(runs[0], is_reference=True)
+        self.window.benchmark_runs = runs
+        self.window._refresh_benchmark_history()
+        self.assertTrue(self.window.toggle_active_benchmark_baseline(0))
+        self.window.benchmark_list.setCurrentRow(1)
+        self.assertTrue(self.window.compare_active_baseline_button.isEnabled())
+        self.window._last_benchmark_comparison = ("pair", runs[1], runs[0])
+        self.window.export_benchmark_button.setEnabled(True)
+
+        self.assertTrue(self.window.compare_selected_with_active_baseline())
+
+        self.assertEqual(self.window.benchmark_before.currentData(), 0)
+        self.assertEqual(self.window.benchmark_after.currentData(), 1)
+        self.assertIsNone(self.window._last_benchmark_comparison)
+        self.assertFalse(self.window.export_benchmark_button.isEnabled())
+        self.assertIn("Нажми «Сравнить»", self.window.benchmark_report.toPlainText())
+        self.window.benchmark_list.setCurrentRow(0)
+        self.assertFalse(self.window.compare_active_baseline_button.isEnabled())
+        self.assertIn("уже является", self.window.compare_active_baseline_button.toolTip())
+
+    def test_active_baseline_can_only_be_one_pinned_reference_and_is_session_state(self):
+        runs = [
+            replace(analyze_frame_times("first.csv", [11.0] * 4), is_reference=True),
+            replace(analyze_frame_times("second.csv", [12.0] * 4), is_reference=True),
+            analyze_frame_times("ordinary.csv", [13.0] * 4),
+        ]
+        self.window.benchmark_runs = runs
+        self.window._refresh_benchmark_history()
+        self.assertFalse(self.window.compare_active_baseline_button.isVisible())
+        self.assertFalse(self.window.toggle_active_benchmark_baseline(2))
+        self.assertTrue(self.window.toggle_active_benchmark_baseline(0))
+        self.assertTrue(self.window.toggle_active_benchmark_baseline(1))
+        self.assertIs(self.window._active_benchmark_baseline, runs[1])
+        self.assertTrue(self.window.toggle_active_benchmark_baseline(1))
+        self.assertIsNone(self.window._active_benchmark_baseline)
+
+    def test_active_baseline_survives_batch_import_and_keeps_object_identity(self):
+        reference = replace(analyze_frame_times("reference.csv", [11.0] * 40), is_reference=True)
+        self.window.benchmark_runs = [reference]
+        self.window.benchmark_store.save([reference])
+        self.window._refresh_benchmark_history()
+        self.window.toggle_active_benchmark_baseline(0)
+        added = analyze_frame_times("added.csv", [15.0] * 40)
+        with (
+            patch("frameforge.ui.main_window.QFileDialog.getOpenFileNames", return_value=(["added.csv"], "CSV files (*.csv)")),
+            patch("frameforge.ui.main_window.load_benchmark_csv", return_value=(added, [])),
+            patch.object(QMessageBox, "information"),
+        ):
+            self.window.import_benchmark()
+        self.assertIs(self.window._active_benchmark_baseline, reference)
+        self.assertIs(self.window.benchmark_runs[0], reference)
+        self.window.benchmark_list.setCurrentRow(1)
+        self.assertTrue(self.window.compare_selected_with_active_baseline())
+        self.assertEqual(self.window.benchmark_before.currentData(), 0)
+
+    def test_failed_unpin_save_preserves_active_baseline(self):
+        reference = replace(analyze_frame_times("reference.csv", [11.0] * 4), is_reference=True)
+        self.window.benchmark_runs = [reference]
+        self.window.benchmark_store.save([reference])
+        self.window._refresh_benchmark_history()
+        self.window.toggle_active_benchmark_baseline(0)
+        self.window.benchmark_list.setCurrentRow(0)
+        with patch.object(self.window.benchmark_store, "save", side_effect=OSError("disk full")), patch.object(QMessageBox, "warning"):
+            self.window.toggle_selected_reference()
+        self.assertIs(self.window._active_benchmark_baseline, reference)
+        self.assertTrue(self.window.benchmark_runs[0].is_reference)
+        self.assertTrue(self.window.benchmark_store.load()[0].is_reference)
 
     def test_unpin_at_capacity_requires_confirmation_and_evicts_oldest_ordinary(self):
         runs = [analyze_frame_times(f"run-{index}.csv", [10 + index]) for index in range(MAX_HISTORY + 1)]
