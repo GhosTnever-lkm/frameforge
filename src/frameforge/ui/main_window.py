@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import csv
 import os
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from ..core.benchmark import (
     export_comparison_csv, export_comparison_json, export_group_comparison_csv,
     export_group_comparison_json, load_benchmark_csv,
 )
-from ..core.benchmark_store import BenchmarkStore, MAX_HISTORY
+from ..core.benchmark_store import BenchmarkStore, MAX_HISTORY, MAX_REFERENCE_RUNS, retain_benchmark_runs
 from ..core.backup import restore_from_backup, sha256
 from ..core.config_finder import find_skyrim_config
 from ..core.profiles import TUNING_PROFILES
@@ -380,6 +381,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "История замеров недоступна", f"Создана пустая история в памяти приложения. Исходный файл не изменён.\n{exc}")
         self.benchmark_list = QListWidget()
         self.benchmark_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.benchmark_list.itemSelectionChanged.connect(self._update_reference_controls)
         self._benchmark_group_a: set[int] = set()
         self._benchmark_group_b: set[int] = set()
         self._last_benchmark_comparison = None
@@ -395,6 +397,16 @@ class MainWindow(QMainWindow):
         history_filter_row.addWidget(self.benchmark_history_count)
         layout.addLayout(history_filter_row)
         layout.addWidget(self.benchmark_list)
+        reference_row = QHBoxLayout()
+        self.reference_status = QLabel("Эталоны: 0/5 · закреплённые прогоны сохраняются сверх лимита истории")
+        self.reference_status.setObjectName("muted")
+        self.reference_status.setWordWrap(True)
+        reference_row.addWidget(self.reference_status, 1)
+        self.toggle_reference_button = QPushButton("Закрепить выбранный как эталон")
+        self.toggle_reference_button.setEnabled(False)
+        self.toggle_reference_button.clicked.connect(self.toggle_selected_reference)
+        reference_row.addWidget(self.toggle_reference_button)
+        layout.addLayout(reference_row)
         group_help = QLabel("Повторные замеры: выдели не менее 3 CSV в каждой группе. Фильтр списка влияет только на это назначение; поля Baseline/Variant используют всю историю. Группы временные и сбросятся при перезапуске.")
         group_help.setObjectName("muted")
         group_help.setWordWrap(True)
@@ -574,7 +586,11 @@ class MainWindow(QMainWindow):
             details = "\n".join(details_lines) or "Не удалось получить данные из выбранных файлов."
             QMessageBox.warning(self, "CSV не загружены", details)
             return
-        updated_runs = (self.benchmark_runs + imported)[-MAX_HISTORY:]
+        try:
+            updated_runs = retain_benchmark_runs(self.benchmark_runs + imported)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Не удалось обновить историю", str(exc))
+            return
         try:
             self.benchmark_store.save(updated_runs)
         except (OSError, ValueError) as exc:
@@ -616,11 +632,13 @@ class MainWindow(QMainWindow):
             manual = ", ".join(GUIDE_CHECKLIST_LABELS.get(item, item) for item in run.manual_changes)
             manual = f" · чек-лист: {manual}" if manual else ""
             group_tag = "A · " if id(run) in self._benchmark_group_a else "B · " if id(run) in self._benchmark_group_b else ""
-            item = QListWidgetItem(f"[{group_tag or '—'}] {run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · {label}{note}{setting}{manual} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
+            reference_tag = "★ ЭТАЛОН · " if run.is_reference else ""
+            item = QListWidgetItem(f"[{reference_tag}{group_tag or '—'}] {run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · {label}{note}{setting}{manual} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
             item.setData(Qt.ItemDataRole.UserRole, index)
             self.benchmark_list.addItem(item)
         if hasattr(self, "benchmark_groups_status"):
             self.benchmark_groups_status.setText(f"Группа A: {len(self._benchmark_group_a)} · Группа B: {len(self._benchmark_group_b)}")
+        self._update_reference_controls()
         self._filter_benchmark_history(self.benchmark_history_filter.text())
         if not hasattr(self, "benchmark_before"):
             return
@@ -632,7 +650,7 @@ class MainWindow(QMainWindow):
             for index, run in enumerate(self.benchmark_runs):
                 setting = f"{run.setting_key}={run.setting_value}" if run.setting_key else ""
                 manual = ", ".join(GUIDE_CHECKLIST_LABELS.get(item, item) for item in run.manual_changes)
-                label = " · ".join(part for part in (run.name, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.game or "Игра не указана", run.scene or "", run.change_note, setting, manual) if part)
+                label = " · ".join(part for part in (("★ ЭТАЛОН" if run.is_reference else ""), run.name, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.game or "Игра не указана", run.scene or "", run.change_note, setting, manual) if part)
                 selector.addItem(label, index)
             selector.blockSignals(False)
         if self.benchmark_runs:
@@ -654,7 +672,7 @@ class MainWindow(QMainWindow):
                 label.setText(f"{side}: нет выбранного замера")
                 continue
             run = self.benchmark_runs[index]
-            identity = " · ".join((run.name, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.game or "Игра не указана", run.scene or "сцена не указана"))
+            identity = " · ".join(("★ ЭТАЛОН" if run.is_reference else "", run.name, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.game or "Игра не указана", run.scene or "сцена не указана"))
             label.setText(f"{side} #{index + 1:03d}: {identity}")
 
     def _search_benchmark_pairs(self, query: str):
@@ -671,7 +689,7 @@ class MainWindow(QMainWindow):
             run = self.benchmark_runs[index]
             setting = f" · {run.setting_key}={run.setting_value}" if run.setting_key else ""
             item = QListWidgetItem(
-                f"#{index + 1:03d} · {run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · "
+                f"#{index + 1:03d} · {'★ ЭТАЛОН · ' if run.is_reference else ''}{run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · "
                 f"{run.game or 'Игра не указана'} · {run.scene or 'сцена не указана'}{setting}"
             )
             item.setData(Qt.ItemDataRole.UserRole, index)
@@ -754,6 +772,7 @@ class MainWindow(QMainWindow):
             run = self.benchmark_runs[index]
             checklist = " ".join(GUIDE_CHECKLIST_LABELS.get(key, key) for key in run.manual_changes)
             searchable = " ".join((
+                "эталон" if run.is_reference else "",
                 run.name,
                 run.game,
                 run.scene,
@@ -912,6 +931,106 @@ class MainWindow(QMainWindow):
             f"Сохранён агрегированный отчёт:\n{target}\n\nВ нём нет исходных путей и кадров CSV.",
         )
 
+    def _update_reference_controls(self, *_args):
+        if not hasattr(self, "toggle_reference_button"):
+            return
+        reference_count = sum(run.is_reference for run in self.benchmark_runs)
+        self.reference_status.setText(
+            f"Эталоны: {reference_count}/{MAX_REFERENCE_RUNS} · закреплённые прогоны не вытесняются импортом"
+        )
+        selected = self.benchmark_list.selectedItems()
+        if len(selected) != 1:
+            self.toggle_reference_button.setEnabled(False)
+            self.toggle_reference_button.setText("Выбери один замер для эталона")
+            return
+        index = selected[0].data(Qt.ItemDataRole.UserRole)
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+            self.toggle_reference_button.setEnabled(False)
+            self.toggle_reference_button.setText("Выбранный замер недоступен")
+            return
+        run = self.benchmark_runs[index]
+        self.toggle_reference_button.setEnabled(run.is_reference or reference_count < MAX_REFERENCE_RUNS)
+        self.toggle_reference_button.setText(
+            "Снять эталон с выбранного замера" if run.is_reference else "Закрепить выбранный как эталон"
+        )
+
+    def toggle_selected_reference(self):
+        selected = self.benchmark_list.selectedItems()
+        if len(selected) != 1:
+            self._update_reference_controls()
+            return
+        index = selected[0].data(Qt.ItemDataRole.UserRole)
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+            QMessageBox.information(self, "Замер недоступен", "Обнови список истории и выбери замер снова.")
+            return
+        old_run = self.benchmark_runs[index]
+        previous_pair_runs = []
+        for selector in (self.benchmark_before, self.benchmark_after):
+            selected_index = selector.currentData(Qt.ItemDataRole.UserRole)
+            previous_pair_runs.append(
+                self.benchmark_runs[selected_index]
+                if isinstance(selected_index, int) and not isinstance(selected_index, bool) and 0 <= selected_index < len(self.benchmark_runs)
+                else None
+            )
+        pinning = not old_run.is_reference
+        if pinning and sum(run.is_reference for run in self.benchmark_runs) >= MAX_REFERENCE_RUNS:
+            QMessageBox.information(self, "Лимит эталонов", f"Можно закрепить не больше {MAX_REFERENCE_RUNS} замеров. Сними один эталон и повтори.")
+            return
+        if not pinning and sum(not run.is_reference for run in self.benchmark_runs) >= MAX_HISTORY:
+            oldest_ordinary = next((run for run in self.benchmark_runs if not run.is_reference), None)
+            if oldest_ordinary is old_run:
+                message = "Этот эталон — самый старый замер. После снятия эталона он сразу будет удалён, чтобы сохранить лимит в 100 обычных записей. Продолжить?"
+            else:
+                message = "После снятия эталона обычных замеров станет больше 100. Самый старый обычный замер будет удалён из локальной истории. Продолжить?"
+            answer = QMessageBox.question(
+                self,
+                "История заполнена",
+                message,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        new_run = replace(old_run, is_reference=pinning)
+        updated = list(self.benchmark_runs)
+        updated[index] = new_run
+        try:
+            updated = retain_benchmark_runs(updated)
+            self.benchmark_store.save(updated)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Эталон не сохранён", f"История не изменена.\n{exc}")
+            return
+        old_id, new_id = id(old_run), id(new_run)
+        for group in (self._benchmark_group_a, self._benchmark_group_b):
+            if old_id in group:
+                group.remove(old_id)
+                if any(run is new_run for run in updated):
+                    group.add(new_id)
+        self.benchmark_runs = updated
+        retained_ids = {id(run) for run in updated}
+        self._benchmark_group_a.intersection_update(retained_ids)
+        self._benchmark_group_b.intersection_update(retained_ids)
+        self._last_benchmark_comparison = None
+        if hasattr(self, "export_benchmark_button"):
+            self.export_benchmark_button.setEnabled(False)
+        if hasattr(self, "benchmark_report"):
+            self.benchmark_report.setPlainText("Эталон истории обновлён. Выбери пару A/B и сравни её заново.")
+        if hasattr(self, "benchmark_chart"):
+            self.benchmark_chart.hide()
+            self.benchmark_chart_title.hide()
+            self.benchmark_chart_note.hide()
+        self._refresh_benchmark_history()
+        for selector, previous_run, fallback in zip(
+            (self.benchmark_before, self.benchmark_after),
+            previous_pair_runs,
+            (0, max(0, len(self.benchmark_runs) - 1)),
+        ):
+            target_run = new_run if previous_run is old_run else previous_run
+            target_index = next((position for position, run in enumerate(self.benchmark_runs) if run is target_run), None)
+            if target_index is not None:
+                selector.setCurrentIndex(target_index)
+            elif self.benchmark_runs:
+                selector.setCurrentIndex(fallback)
+        if self.benchmark_list.count() > index and any(run is new_run for run in self.benchmark_runs):
+            self.benchmark_list.setCurrentRow(index)
     def _backups_page(self):
         scroll, layout = self._scroll_page()
         layout.addWidget(QLabel("Локальные снимки исходных файлов"))

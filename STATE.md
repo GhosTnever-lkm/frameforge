@@ -4,9 +4,9 @@ Updated: 2026-10-09
 
 ## Current version
 
-- Published: v1.5.0, full-history searchable Baseline/Variant assignment. Release workflow [37871225454](https://github.com/GhosTnever-lkm/frameforge/actions/runs/37871225454) passed tests, compile, Windows build and release publication. Downloaded archive SHA-256 verified as `3529ecece917443a08898a34fe41929d40d37d6fdf462e523566b590f64d1537`; extracted app launched and responded with title `FrameForge — Game Tuning Studio`.
-- Portfolio commit `0bb4ca94ff7e051ad5369da7bfe911f5dda81c08` updates the FrameForge card to v1.5.0. Pages run [37871422009](https://github.com/GhosTnever-lkm/GhosTnever-lkm.github.io/actions/runs/37871422009) remains in its deploy step; a fresh live-page request still showed the old v1.4.0 card at the latest check.
-- Local v1.5.0 checks: 94 tests pass; 4 symlink tests skip due to environment privileges; compileall and diff check pass. Search/index Qt offscreen smokes pass.
+- Published: v1.6.0, descriptive per-run frametime tail spread. Release workflow [37871967572](https://github.com/GhosTnever-lkm/frameforge/actions/runs/37871967572) passed; archive SHA-256 `fe606643804cedae66a3a456ab46cf2625de6b74576c1806a4fa106a63b021c7`.
+- Portfolio commit `90ba35b3e6dc4427ed6e9d88cd7740faa3a1f5f6` updates the FrameForge card to v1.6.0; Pages run [37872052967](https://github.com/GhosTnever-lkm/GhosTnever-lkm.github.io/actions/runs/37872052967) passed and the live page was verified.
+- Local v1.6.0 release checks: 99 tests passed; 4 symlink tests skipped due to environment privileges; compile, package and release smoke passed.
 
 - Published: v1.4.0, searchable benchmark history list and explicit group-filter scope.
 - GitHub Actions release run [37869978554](https://github.com/GhosTnever-lkm/frameforge/actions/runs/37869978554) passed tests, compilation, Windows build and release publication.
@@ -59,15 +59,16 @@ Updated: 2026-10-09
 - Local test suite currently: 94 passed, 4 platform-dependent symlink skips. `compileall` and `git diff --check` pass; the UI version matches `VERSION`. Qt offscreen smokes verify duplicate-name identities, a filtered row 0 assigning original history index 47, no-result behavior, invalid pair rejection, and pair-report/group-export state.
 - DeepSeek recommended this separate search/list/explicit-assignment design. Its first code-review concern about `itemData(index)` was resolved by an exact Qt smoke where result row 0 stores history index 47 and correctly assigns combo item 47; DeepSeek withdrew the concern and confirmed no blockers. The concern about batch truncation is addressed by the import flow synchronously selecting and comparing the newest retained pair before returning.
 
-## Work in progress: v1.6.0
+## Work in progress: v1.7.0
 
-- Pair reports and aggregate-only CSV/JSON exports now show the descriptive within-run tail spread `p99 − median` in milliseconds.
-- Pair comparison JSON schema is version 4 so clients can distinguish the new field from v3; the repeated-group JSON schema is unchanged.
-- Report and README state this is not a significance test or a guarantee of perceived smoothness. Regression coverage checks exact values, report wording and export fields.
-- Local test suite currently: 95 passed, 4 platform-dependent symlink skips.
+- Adds up to five pinned reference runs that survive the 100-run ordinary history cap; imports evict only the oldest ordinary entries.
+- History schema v9 migrates old records as unpinned, rejects malformed flags and over-budget stores, and keeps reference markers out of aggregate exports.
+- UI supports pin/unpin, searches and A/B selection; a full-cap unpin warns before eviction and explicitly identifies when the just-unpinned oldest run will be deleted.
+- DeepSeek adversarial review found no confirmed blockers; its residual UX case was handled with the clearer warning above.
+- Local test suite: 103 passed, 4 platform-dependent symlink skips; compileall and diff check pass.
 
 ## Next
 
-1. Complete release gates and publish v1.6.0.
-2. Resolve/verify the delayed Pages deployment for the v1.5.0 portfolio card.
-3. Continue FrameForge improvements within the five-hour work block.
+1. Complete v1.7.0 release gates, publish the Windows build and verify startup/checksum.
+2. Update and verify the portfolio card and changelog for v1.7.0.
+3. Continue FrameForge work within the five-hour work block.

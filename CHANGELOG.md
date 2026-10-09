@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.0 - 2026-10-09
+
+- Add up to five pinned benchmark reference runs that survive the 100 ordinary-run history limit.
+- Evict only the oldest unpinned runs on import; preserve pinned positions, include references in search and A/B selection, and require confirmation before an unpin that would exceed the normal history cap.
+- Migrate benchmark history v1-v8 to schema v9 with existing runs unpinned; keep reference flags local and out of aggregate exports.
+
 ## 1.6.0 - 2026-10-09
 
 - Add a descriptive within-run frametime tail spread (p99 minus median) to pair reports and aggregate-only CSV/JSON exports; version the pair JSON schema as v4.

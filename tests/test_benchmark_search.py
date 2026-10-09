@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from frameforge.core.benchmark import analyze_frame_times
 from frameforge.ui.benchmark_search import matching_benchmark_indices
@@ -36,6 +37,10 @@ class BenchmarkSearchTests(unittest.TestCase):
         ))
         self.assertEqual(matching_benchmark_indices(self.runs, "ТЕНЕЙ"), (3,))
         self.assertEqual(matching_benchmark_indices(self.runs, "iminGRASSsize"), (4,))
+
+    def test_search_finds_pinned_reference_runs(self) -> None:
+        self.runs[1] = replace(self.runs[1], is_reference=True)
+        self.assertEqual(matching_benchmark_indices(self.runs, "эталон"), (1,))
 
 
 if __name__ == "__main__":

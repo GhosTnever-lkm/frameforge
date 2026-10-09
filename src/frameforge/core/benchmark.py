@@ -61,6 +61,8 @@ class Benchmark:
     # Counts only; raw per-frame samples are deliberately discarded after import.
     # None means this run predates frame-budget summaries.
     frame_budget_counts: tuple[int, ...] | None = None
+    # A pinned reference stays in local history when older ordinary runs are evicted.
+    is_reference: bool = False
 
 
 PRESENTMON_FRAME_TIMING_COLUMNS = {

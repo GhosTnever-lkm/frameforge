@@ -11,7 +11,7 @@ from ..catalog import GUIDE_CHECKLISTS
 from .benchmark import Benchmark, FRAME_BUDGET_FPS_PRESETS, FRAME_TIME_BUCKET_EDGES_MS, MAX_CHANGE_NOTE_CHARS, MAX_SAMPLES, METRIC_KINDS, FrameTimingSummary, PRESENTMON_FRAME_TIMING_COLUMNS
 from .profiles import TUNING_PROFILES
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 LEGACY_SCHEMA_VERSION = 1
 LABEL_SCHEMA_VERSION = 2
 METRIC_SCHEMA_VERSION = 3
@@ -19,14 +19,27 @@ NOTE_SCHEMA_VERSION = 4
 SETTING_SNAPSHOT_SCHEMA_VERSION = 5
 FRAME_TIMING_SCHEMA_VERSION = 7
 FRAME_BUDGET_SCHEMA_VERSION = 8
+REFERENCE_SCHEMA_VERSION = 9
 ALLOWED_SETTING_KEYS = frozenset(profile.setting for profile in TUNING_PROFILES)
 MAX_HISTORY = 100
+MAX_REFERENCE_RUNS = 5
+MAX_STORED_RUNS = MAX_HISTORY + MAX_REFERENCE_RUNS
 MAX_STORE_BYTES = 2 * 1024 * 1024
 _FIELDS = {
     "name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "sample_count", "average_fps", "one_percent_low_fps",
     "p99_frame_time_ms", "median_frame_time_ms", "min_frame_time_ms", "frame_timing", "frame_budget_counts",
-    "max_frame_time_ms", "frame_time_buckets",
+    "max_frame_time_ms", "frame_time_buckets", "is_reference",
 }
+
+
+def retain_benchmark_runs(runs: list[Benchmark]) -> list[Benchmark]:
+    """Keep all pinned references and only the newest 100 ordinary runs, preserving order."""
+    references = [index for index, run in enumerate(runs) if run.is_reference]
+    if len(references) > MAX_REFERENCE_RUNS:
+        raise ValueError("Можно закрепить не больше пяти эталонных замеров.")
+    ordinary = [index for index, run in enumerate(runs) if not run.is_reference]
+    keep = set(references + ordinary[-MAX_HISTORY:])
+    return [run for index, run in enumerate(runs) if index in keep]
 
 
 def _validate_benchmark(value: object) -> Benchmark:
@@ -42,6 +55,9 @@ def _validate_benchmark(value: object) -> Benchmark:
     manual_changes = value["manual_changes"]
     frame_timing = value["frame_timing"]
     frame_budget_counts = value["frame_budget_counts"]
+    is_reference = value["is_reference"]
+    if not isinstance(is_reference, bool):
+        raise ValueError("Флаг эталонного замера в истории некорректен.")
     count = value["sample_count"]
     if not isinstance(name, str) or not name or len(name) > 255 or "/" in name or "\\" in name:
         raise ValueError("Имя замера в истории некорректно.")
@@ -111,7 +127,7 @@ def _validate_benchmark(value: object) -> Benchmark:
             or any(left < right for left, right in zip(frame_budget_counts, frame_budget_counts[1:]))
         ):
             raise ValueError("Счётчики Frame budget в истории некорректны.")
-    numeric_fields = _FIELDS - {"name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "frame_timing", "frame_budget_counts", "sample_count", "frame_time_buckets"}
+    numeric_fields = _FIELDS - {"name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "frame_timing", "frame_budget_counts", "is_reference", "sample_count", "frame_time_buckets"}
     for field in numeric_fields:
         item = value[field]
         if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) or item <= 0:
@@ -150,6 +166,7 @@ def _validate_benchmark(value: object) -> Benchmark:
         frame_time_buckets=tuple(buckets),
         frame_timing=tuple(summaries),
         frame_budget_counts=None if frame_budget_counts is None else tuple(frame_budget_counts),
+        is_reference=is_reference,
     )
 
 
@@ -174,8 +191,12 @@ class BenchmarkStore:
         if isinstance(version, bool) or not isinstance(version, int) or version not in tuple(range(LEGACY_SCHEMA_VERSION, SCHEMA_VERSION + 1)):
             raise ValueError("Версия или структура локальной истории бенчмарков не поддерживается.")
         rows = document["runs"]
-        if not isinstance(rows, list) or len(rows) > MAX_HISTORY:
+        if not isinstance(rows, list) or len(rows) > MAX_STORED_RUNS:
             raise ValueError("Список локальных замеров некорректен.")
+        if sum(isinstance(row, dict) and row.get("is_reference") is True for row in rows) > MAX_REFERENCE_RUNS:
+            raise ValueError("В истории больше пяти эталонных замеров.")
+        if sum(not (isinstance(row, dict) and row.get("is_reference") is True) for row in rows) > MAX_HISTORY:
+            raise ValueError("В истории больше 100 обычных замеров.")
         if version < SCHEMA_VERSION:
             migrated = []
             for row in rows:
@@ -196,12 +217,20 @@ class BenchmarkStore:
                 if version < FRAME_BUDGET_SCHEMA_VERSION:
                     # Old aggregates cannot be reprocessed: their raw frame times were never stored.
                     base["frame_budget_counts"] = None
+                if version < REFERENCE_SCHEMA_VERSION:
+                    base["is_reference"] = False
                 migrated.append(_validate_benchmark(base))
             return migrated
         return [_validate_benchmark(row) for row in rows]
 
     def save(self, runs: list[Benchmark]) -> None:
-        clean = [_validate_benchmark(asdict(run) | {"frame_time_buckets": list(run.frame_time_buckets)}) for run in runs[-MAX_HISTORY:]]
+        clean = [_validate_benchmark(asdict(run) | {"frame_time_buckets": list(run.frame_time_buckets)}) for run in runs]
+        if sum(run.is_reference for run in clean) > MAX_REFERENCE_RUNS:
+            raise ValueError("Можно закрепить не больше пяти эталонных замеров.")
+        if sum(not run.is_reference for run in clean) > MAX_HISTORY:
+            raise ValueError("Обычная история не может содержать больше 100 замеров.")
+        if len(clean) > MAX_STORED_RUNS:
+            raise ValueError("Слишком много замеров для локальной истории.")
         stored_runs = [
             asdict(run)
             | {"frame_time_buckets": list(run.frame_time_buckets)}

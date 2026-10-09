@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,7 +18,7 @@ from frameforge.core.benchmark import (
     export_group_comparison_csv, export_group_comparison_json, load_benchmark_csv,
     frame_budget_share, frame_time_spread_ms, load_frame_time_csv, summarize_benchmark_group,
 )
-from frameforge.core.benchmark_store import BenchmarkStore, MAX_HISTORY, SCHEMA_VERSION
+from frameforge.core.benchmark_store import BenchmarkStore, MAX_HISTORY, MAX_REFERENCE_RUNS, SCHEMA_VERSION, retain_benchmark_runs
 from frameforge.core.safety import SafetyError, get_documents_root, validate_config_path
 from frameforge.core.scanner import parse_libraryfolders
 from frameforge.core.settings_snapshot import read_allowed_setting_snapshot
@@ -665,7 +666,7 @@ class FrameForgeCoreTests(unittest.TestCase):
 
     def test_benchmark_export_contains_aggregates_without_names_or_raw_frames(self):
         before = analyze_frame_times("C:\\private\\before.csv", [10.0, 11.0, 12.0], game="Cyberpunk 2077", scene="Night City / save 42", frame_timing=(FrameTimingSummary("gpu_busy", 3, 1.0, 2.0),))
-        before = Benchmark(**(before.__dict__ | {"change_note": "LOCAL_ONLY C:\\Users\\private\\settings.ini", "setting_key": "iMinGrassSize", "setting_value": 40, "manual_changes": ("cyberpunk.volumetrics",)}))
+        before = Benchmark(**(before.__dict__ | {"change_note": "LOCAL_ONLY C:\\Users\\private\\settings.ini", "setting_key": "iMinGrassSize", "setting_value": 40, "manual_changes": ("cyberpunk.volumetrics",), "is_reference": True}))
         after = analyze_frame_times("D:\\secret\\after.csv", [9.0, 10.0, 120.0], game="Cyberpunk 2077", scene="Night City / save 43", change_note="another local note", frame_timing=(FrameTimingSummary("cpu_busy", 2, 2.0, 3.0),))
         csv_export = export_comparison_csv(before, after)
         json_export = export_comparison_json(before, after)
@@ -682,6 +683,7 @@ class FrameForgeCoreTests(unittest.TestCase):
             self.assertNotIn("cyberpunk.volumetrics", export)
             self.assertNotIn("gpu_busy", export)
             self.assertNotIn("frame_timing", export)
+            self.assertNotIn("is_reference", export)
             self.assertNotIn("LOCAL_ONLY", export)
             self.assertNotIn("\nframe_time_ms\n", export)
         self.assertIn("average_fps", csv_export)
@@ -743,7 +745,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         store.save([run])
         self.assertEqual(store.load(), [run])
         raw = json.loads(store.path.read_text(encoding="utf-8"))
-        self.assertEqual(raw["schema_version"], 8)
+        self.assertEqual(raw["schema_version"], SCHEMA_VERSION)
         self.assertEqual(raw["runs"][0]["frame_timing"][1]["metric_id"], "gpu_busy")
         self.assertEqual(raw["runs"][0]["frame_budget_counts"], list(run.frame_budget_counts))
 
@@ -802,7 +804,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertIn("нет данных (замер импортирован в старой версии", report)
         self.assertNotIn("A: 0.0%", report)
         store.save([loaded])
-        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 8)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], SCHEMA_VERSION)
         self.assertIsNone(store.load()[0].frame_budget_counts)
 
     def test_frame_budget_group_uses_median_of_per_csv_percentages(self):
@@ -863,7 +865,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         loaded = store.load()
         self.assertEqual(loaded[0].frame_timing, ())
         store.save(loaded)
-        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 8)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], SCHEMA_VERSION)
 
     def test_benchmark_history_rejects_invalid_frame_timing_summaries(self):
         store = BenchmarkStore(Path(self.temp.name) / "benchmarks-invalid-timing.json")
@@ -1062,11 +1064,57 @@ class FrameForgeCoreTests(unittest.TestCase):
         path = Path(self.temp.name) / "benchmarks.json"
         store = BenchmarkStore(path)
         runs = [analyze_frame_times(f"run-{index}.csv", [10]) for index in range(MAX_HISTORY + 3)]
-        store.save(runs)
+        store.save(retain_benchmark_runs(runs))
         loaded = store.load()
         self.assertEqual(len(loaded), MAX_HISTORY)
         self.assertEqual(loaded[0].name, "run-3.csv")
         self.assertEqual(loaded[-1].name, "run-102.csv")
+
+    def test_reference_roundtrip_preserves_flags_and_positions(self):
+        store = BenchmarkStore(Path(self.temp.name) / "benchmarks-references.json")
+        runs = [
+            replace(analyze_frame_times(f"run-{index}.csv", [10]), is_reference=index in {1, 5})
+            for index in range(8)
+        ]
+        store.save(runs)
+        loaded = store.load()
+        self.assertEqual([run.name for run in loaded], [run.name for run in runs])
+        self.assertEqual([run.is_reference for run in loaded], [run.is_reference for run in runs])
+
+    def test_old_v8_store_migrates_references_to_false(self):
+        path = Path(self.temp.name) / "benchmarks-v8.json"
+        run = analyze_frame_times("legacy.csv", [10])
+        row = run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}
+        row.pop("is_reference")
+        path.write_text(json.dumps({"schema_version": 8, "runs": [row]}), encoding="utf-8")
+        store = BenchmarkStore(path)
+        self.assertIs(store.load()[0].is_reference, False)
+        store.save(store.load())
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], SCHEMA_VERSION)
+
+    def test_history_retention_evicts_oldest_ordinary_and_preserves_references(self):
+        runs = [analyze_frame_times(f"run-{index}.csv", [10]) for index in range(MAX_HISTORY + 2)]
+        pinned = replace(runs[50], is_reference=True)
+        runs[50] = pinned
+        retained = retain_benchmark_runs(runs)
+        self.assertEqual(sum(not run.is_reference for run in retained), MAX_HISTORY)
+        self.assertIn(pinned, retained)
+        self.assertNotIn("run-0.csv", [run.name for run in retained])
+        self.assertEqual([run.name for run in retained].index("run-50.csv"), 49)
+
+    def test_store_rejects_reference_budgets_and_non_bool_flags(self):
+        store = BenchmarkStore(Path(self.temp.name) / "benchmarks-invalid-references.json")
+        ordinary = analyze_frame_times("ordinary.csv", [10])
+        too_many_refs = [replace(ordinary, name=f"ref-{index}.csv", is_reference=True) for index in range(MAX_REFERENCE_RUNS + 1)]
+        with self.assertRaisesRegex(ValueError, "пяти"):
+            store.save(too_many_refs)
+        with self.assertRaisesRegex(ValueError, "100"):
+            store.save([replace(ordinary, name=f"run-{index}.csv") for index in range(MAX_HISTORY + 1)])
+        row = ordinary.__dict__ | {"frame_time_buckets": list(ordinary.frame_time_buckets), "is_reference": 1}
+        path = store.path
+        path.write_text(json.dumps({"schema_version": SCHEMA_VERSION, "runs": [row]}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "эталонного"):
+            store.load()
 
     def test_refuses_stale_preview_without_modifying_config(self):
         preview_source = self.config.read_bytes()

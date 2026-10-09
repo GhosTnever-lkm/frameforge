@@ -11,7 +11,7 @@ from ..core.benchmark import Benchmark, METRIC_LABELS
 def searchable_benchmark_text(run: Benchmark) -> str:
     manual = " ".join(GUIDE_CHECKLIST_LABELS.get(item, item) for item in run.manual_changes)
     setting = f"{run.setting_key} {run.setting_value}" if run.setting_key else ""
-    return " ".join((run.name, run.game, run.scene, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.change_note, setting, manual)).casefold()
+    return " ".join(("эталон" if run.is_reference else "", run.name, run.game, run.scene, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.change_note, setting, manual)).casefold()
 
 
 def matching_benchmark_indices(runs: Sequence[Benchmark], query: str) -> tuple[int, ...]:
