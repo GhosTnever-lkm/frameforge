@@ -27,6 +27,76 @@ GUIDES = {
 
 GUIDE_GAMES = list(GUIDES)
 
+# Stable identifiers let a benchmark record which recommendations the user
+# manually changed without storing free-form data or touching game files.
+GUIDE_CHECKLISTS = {
+    "Counter-Strike 2": (
+        ("cs2.shadows", "Качество теней"),
+        ("cs2.anti_aliasing", "Сглаживание"),
+        ("cs2.effects", "Качество эффектов"),
+    ),
+    "Dota 2": (
+        ("dota2.shadows", "Качество теней"),
+        ("dota2.effects", "Эффекты"),
+        ("dota2.rendering", "Качество рендеринга"),
+    ),
+    "Apex Legends": (
+        ("apex.shadows", "Качество теней"),
+        ("apex.volumetric_lighting", "Объёмное освещение"),
+        ("apex.effects", "Качество эффектов"),
+    ),
+    "PUBG: Battlegrounds": (
+        ("pubg.shadows", "Качество теней"),
+        ("pubg.effects", "Эффекты и постобработка"),
+        ("pubg.foliage", "Качество растительности"),
+    ),
+    "Fortnite": (
+        ("fortnite.renderer", "Режим рендеринга"),
+        ("fortnite.shadows", "Качество теней"),
+        ("fortnite.effects", "Эффекты и постобработка"),
+    ),
+    "VALORANT": (
+        ("valorant.materials", "Качество материалов"),
+        ("valorant.shadows", "Качество теней"),
+        ("valorant.effects", "Декоративные эффекты"),
+    ),
+    "Minecraft: Java Edition": (
+        ("minecraft.render_distance", "Дальность прорисовки"),
+        ("minecraft.simulation_distance", "Дальность симуляции"),
+        ("minecraft.shaders_particles", "Шейдеры и частицы"),
+    ),
+    "Cyberpunk 2077": (
+        ("cyberpunk.ray_tracing", "Трассировка лучей"),
+        ("cyberpunk.volumetrics", "Объёмные эффекты"),
+        ("cyberpunk.crowd_density", "Плотность толпы"),
+    ),
+    "Grand Theft Auto V": (
+        ("gta5.msaa", "MSAA"),
+        ("gta5.grass", "Качество травы"),
+        ("gta5.extended_distance", "Расширенная дальность"),
+    ),
+    "The Witcher 3": (
+        ("witcher3.ray_tracing", "Трассировка лучей"),
+        ("witcher3.foliage", "Плотность растительности"),
+        ("witcher3.hairworks", "HairWorks, если доступен"),
+    ),
+    "Rust": (
+        ("rust.shadows", "Качество теней"),
+        ("rust.view_distance", "Дальность прорисовки"),
+        ("rust.grass_effects", "Трава и эффекты"),
+    ),
+    "Warframe": (
+        ("warframe.volumetrics", "Объёмные эффекты"),
+        ("warframe.reflections", "Отражения"),
+        ("warframe.particles_lighting", "Частицы и динамическое освещение"),
+    ),
+}
+GUIDE_CHECKLIST_LABELS = {
+    item_id: label
+    for checklist in GUIDE_CHECKLISTS.values()
+    for item_id, label in checklist
+}
+
 GUIDE = (
     "Выбери игру, чтобы увидеть отдельный чек-лист. FrameForge не меняет файлы этих игр.\n\n"
     "Меню и названия параметров могут меняться с обновлениями. Сравнивай одну и ту же сцену, меняй по одному параметру и возвращай настройку, если качество изображения или читаемость ухудшились."

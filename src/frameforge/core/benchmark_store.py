@@ -7,19 +7,21 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
+from ..catalog import GUIDE_CHECKLISTS
 from .benchmark import Benchmark, FRAME_TIME_BUCKET_EDGES_MS, MAX_CHANGE_NOTE_CHARS, MAX_SAMPLES, METRIC_KINDS
 from .profiles import TUNING_PROFILES
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 LEGACY_SCHEMA_VERSION = 1
 LABEL_SCHEMA_VERSION = 2
 METRIC_SCHEMA_VERSION = 3
 NOTE_SCHEMA_VERSION = 4
+SETTING_SNAPSHOT_SCHEMA_VERSION = 5
 ALLOWED_SETTING_KEYS = frozenset(profile.setting for profile in TUNING_PROFILES)
 MAX_HISTORY = 100
 MAX_STORE_BYTES = 2 * 1024 * 1024
 _FIELDS = {
-    "name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "sample_count", "average_fps", "one_percent_low_fps",
+    "name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "sample_count", "average_fps", "one_percent_low_fps",
     "p99_frame_time_ms", "median_frame_time_ms", "min_frame_time_ms",
     "max_frame_time_ms", "frame_time_buckets",
 }
@@ -35,6 +37,7 @@ def _validate_benchmark(value: object) -> Benchmark:
     change_note = value["change_note"]
     setting_key = value["setting_key"]
     setting_value = value["setting_value"]
+    manual_changes = value["manual_changes"]
     count = value["sample_count"]
     if not isinstance(name, str) or not name or len(name) > 255 or "/" in name or "\\" in name:
         raise ValueError("Имя замера в истории некорректно.")
@@ -60,9 +63,16 @@ def _validate_benchmark(value: object) -> Benchmark:
         or not 0 <= setting_value <= 100_000
     ):
         raise ValueError("Снимок настройки в истории некорректен.")
+    if (
+        not isinstance(manual_changes, (list, tuple))
+        or any(not isinstance(item, str) for item in manual_changes)
+        or len(set(manual_changes)) != len(manual_changes)
+        or not set(manual_changes).issubset({item_id for item_id, _ in GUIDE_CHECKLISTS.get(game, ())})
+    ):
+        raise ValueError("Отметки игрового чек-листа в истории некорректны.")
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_SAMPLES:
         raise ValueError("Количество кадров в истории некорректно.")
-    numeric_fields = _FIELDS - {"name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "sample_count", "frame_time_buckets"}
+    numeric_fields = _FIELDS - {"name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "sample_count", "frame_time_buckets"}
     for field in numeric_fields:
         item = value[field]
         if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) or item <= 0:
@@ -90,6 +100,7 @@ def _validate_benchmark(value: object) -> Benchmark:
         change_note=change_note,
         setting_key=setting_key,
         setting_value=setting_value,
+        manual_changes=tuple(manual_changes),
         sample_count=count,
         average_fps=float(value["average_fps"]),
         one_percent_low_fps=float(value["one_percent_low_fps"]),
@@ -119,12 +130,12 @@ class BenchmarkStore:
         if not isinstance(document, dict) or set(document) != {"schema_version", "runs"}:
             raise ValueError("Версия или структура локальной истории бенчмарков не поддерживается.")
         version = document["schema_version"]
-        if isinstance(version, bool) or not isinstance(version, int) or version not in (LEGACY_SCHEMA_VERSION, LABEL_SCHEMA_VERSION, METRIC_SCHEMA_VERSION, NOTE_SCHEMA_VERSION, SCHEMA_VERSION):
+        if isinstance(version, bool) or not isinstance(version, int) or version not in (LEGACY_SCHEMA_VERSION, LABEL_SCHEMA_VERSION, METRIC_SCHEMA_VERSION, NOTE_SCHEMA_VERSION, SETTING_SNAPSHOT_SCHEMA_VERSION, SCHEMA_VERSION):
             raise ValueError("Версия или структура локальной истории бенчмарков не поддерживается.")
         rows = document["runs"]
         if not isinstance(rows, list) or len(rows) > MAX_HISTORY:
             raise ValueError("Список локальных замеров некорректен.")
-        if version in (LEGACY_SCHEMA_VERSION, LABEL_SCHEMA_VERSION, METRIC_SCHEMA_VERSION, NOTE_SCHEMA_VERSION):
+        if version in (LEGACY_SCHEMA_VERSION, LABEL_SCHEMA_VERSION, METRIC_SCHEMA_VERSION, NOTE_SCHEMA_VERSION, SETTING_SNAPSHOT_SCHEMA_VERSION):
             migrated = []
             for row in rows:
                 if not isinstance(row, dict):
@@ -138,6 +149,7 @@ class BenchmarkStore:
                     base.setdefault("change_note", "")
                     base.setdefault("setting_key", "")
                     base.setdefault("setting_value", None)
+                    base.setdefault("manual_changes", [])
                 migrated.append(_validate_benchmark(base))
             return migrated
         return [_validate_benchmark(row) for row in rows]

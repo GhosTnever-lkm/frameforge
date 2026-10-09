@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0 - 2026-10-09
+
+- Add optional per-game checklists for manually changed settings to benchmark runs and show the differences as context in A/B reports, without causal claims.
+- Keep checklist selections local and out of CSV/JSON exports; do not read or modify game settings through this checklist.
+- Label manual checklist lists by game in A/B reports and avoid set differences when the selected games differ.
+- Migrate benchmark history schemas v1-v5 into schema v6 with empty checklist selections for older runs.
+- Add a clear Skyrim hint directing users to the separate read-only INI snapshot option.
+
 ## 0.8.0 - 2026-10-09
 
 - Optionally attach a read-only snapshot of the selected allowlisted Skyrim setting to a benchmark; store only its key and integer value, never its INI path.

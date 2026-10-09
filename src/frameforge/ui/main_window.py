@@ -10,12 +10,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QMainWindow, QMessageBox, QPushButton,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
     QScrollArea, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
-from ..catalog import GUIDE, GUIDE_GAMES, GUIDES, GAMES
+from ..catalog import GUIDE, GUIDE_CHECKLISTS, GUIDE_CHECKLIST_LABELS, GUIDE_GAMES, GUIDES, GAMES
 from ..core.apply import apply_profile_setting, build_profile_bytes, make_diff, read_profile_setting
 from ..core.benchmark import (
     Benchmark, METRIC_LABELS, compare_benchmarks, export_comparison_csv,
@@ -330,7 +330,7 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True)
         note.setObjectName("muted")
         layout.addWidget(note)
-        privacy_note = QLabel("История хранится на этом компьютере в %LOCALAPPDATA%\\FrameForge\\benchmarks.json. Сохраняются имя CSV, игра/сцена, заметка об изменении, сводные метрики и только выбранный снимок разрешённого параметра Skyrim; исходный CSV и путь к INI не сохраняются. Заметки, снимки и метки остаются локальными и не включаются в экспорт.")
+        privacy_note = QLabel("История хранится на этом компьютере в %LOCALAPPDATA%\\FrameForge\\benchmarks.json. Сохраняются имя CSV, игра/сцена, заметка, ручные отметки чек-листа, сводные метрики и только выбранный снимок разрешённого параметра Skyrim. Исходный CSV и путь к INI не сохраняются; заметки, отметки, снимки и метки не включаются в экспорт.")
         privacy_note.setObjectName("muted")
         privacy_note.setWordWrap(True)
         layout.addWidget(privacy_note)
@@ -357,6 +357,18 @@ class MainWindow(QMainWindow):
         self.benchmark_include_setting = QCheckBox("Добавить снимок текущего разрешённого параметра Skyrim (только чтение; путь не сохраняется)")
         self.benchmark_include_setting.setToolTip("Нужна выбранная папка настроек на странице «Оптимизатор». Сохраняется только имя параметра и его целое значение.")
         layout.addWidget(self.benchmark_include_setting)
+        checklist_label = QLabel("Что вручную изменено перед этим прогоном? Отмечай только применённые пункты.")
+        checklist_label.setObjectName("tagline")
+        layout.addWidget(checklist_label)
+        self.benchmark_checklist_hint = QLabel()
+        self.benchmark_checklist_hint.setObjectName("muted")
+        self.benchmark_checklist_hint.setWordWrap(True)
+        layout.addWidget(self.benchmark_checklist_hint)
+        self.benchmark_changes = QListWidget()
+        self.benchmark_changes.setMaximumHeight(112)
+        layout.addWidget(self.benchmark_changes)
+        self.benchmark_game.currentIndexChanged.connect(self._refresh_benchmark_checklist)
+        self._refresh_benchmark_checklist()
         self.benchmark_store = BenchmarkStore(app_data_dir() / "benchmarks.json")
         try:
             self.benchmark_runs: list[Benchmark] = self.benchmark_store.load()
@@ -440,6 +452,11 @@ class MainWindow(QMainWindow):
                 change_note=self.benchmark_change_note.text().strip(),
                 setting_key=setting_key,
                 setting_value=setting_value,
+                manual_changes=tuple(
+                    self.benchmark_changes.item(index).data(Qt.ItemDataRole.UserRole)
+                    for index in range(self.benchmark_changes.count())
+                    if self.benchmark_changes.item(index).checkState() == Qt.CheckState.Checked
+                ),
             )
         except (OSError, UnicodeError, ValueError, csv.Error) as exc:
             QMessageBox.warning(self, "CSV не загружен", str(exc))
@@ -455,6 +472,7 @@ class MainWindow(QMainWindow):
             return
         self.benchmark_change_note.clear()
         self.benchmark_include_setting.setChecked(False)
+        self._refresh_benchmark_checklist()
         self._refresh_benchmark_history()
         if len(self.benchmark_runs) >= 2:
             self.benchmark_before.setCurrentIndex(len(self.benchmark_runs) - 2)
@@ -467,7 +485,9 @@ class MainWindow(QMainWindow):
             label = " · ".join(part for part in (run.game or "Игра не указана", run.scene or "сцена не указана") if part)
             note = f" · изменение: {run.change_note}" if run.change_note else ""
             setting = f" · {run.setting_key}={run.setting_value}" if run.setting_key else ""
-            self.benchmark_list.addItem(f"{run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · {label}{note}{setting} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
+            manual = ", ".join(GUIDE_CHECKLIST_LABELS.get(item, item) for item in run.manual_changes)
+            manual = f" · чек-лист: {manual}" if manual else ""
+            self.benchmark_list.addItem(f"{run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · {label}{note}{setting}{manual} · {run.sample_count:,} кадров · {run.average_fps:.1f} avg FPS · {run.one_percent_low_fps:.1f} 1% low")
         if not hasattr(self, "benchmark_before"):
             return
         previous_before = self.benchmark_before.currentData()
@@ -477,12 +497,30 @@ class MainWindow(QMainWindow):
             selector.clear()
             for index, run in enumerate(self.benchmark_runs):
                 setting = f"{run.setting_key}={run.setting_value}" if run.setting_key else ""
-                label = " · ".join(part for part in (run.name, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.game or "Игра не указана", run.scene or "", run.change_note, setting) if part)
+                manual = ", ".join(GUIDE_CHECKLIST_LABELS.get(item, item) for item in run.manual_changes)
+                label = " · ".join(part for part in (run.name, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.game or "Игра не указана", run.scene or "", run.change_note, setting, manual) if part)
                 selector.addItem(label, index)
             selector.blockSignals(False)
         if self.benchmark_runs:
             self.benchmark_before.setCurrentIndex(previous_before if isinstance(previous_before, int) and previous_before < len(self.benchmark_runs) else 0)
             self.benchmark_after.setCurrentIndex(previous_after if isinstance(previous_after, int) and previous_after < len(self.benchmark_runs) else len(self.benchmark_runs) - 1)
+
+    def _refresh_benchmark_checklist(self, *_args):
+        self.benchmark_changes.clear()
+        game = self.benchmark_game.currentData()
+        checklist = GUIDE_CHECKLISTS.get(game, ())
+        for item_id, label in checklist:
+            item = QListWidgetItem(label, self.benchmark_changes)
+            item.setData(Qt.ItemDataRole.UserRole, item_id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+        if checklist:
+            hint = "Отмечай параметры, которые вручную менял между прогонами. Это контекст для сравнения, а не вывод о причине разницы FPS."
+        elif game == "The Elder Scrolls V: Skyrim Special Edition":
+            hint = "Для Skyrim можно включить снимок разрешённой настройки INI выше."
+        else:
+            hint = "Выбери игру, чтобы увидеть её чек-лист."
+        self.benchmark_checklist_hint.setText(hint)
 
     def compare_benchmark_selection(self):
         selection = self._selected_benchmark_pair()

@@ -502,6 +502,27 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertIn("путь к INI не сохранён", report)
         self.assertIn("не доказывает причину", report)
 
+    def test_benchmark_comparison_shows_manual_checklist_changes_as_context(self):
+        before = analyze_frame_times("before.csv", [16], game="Counter-Strike 2", scene="Mirage", manual_changes=("cs2.shadows",))
+        after = analyze_frame_times("after.csv", [15], game="Counter-Strike 2", scene="Mirage", manual_changes=("cs2.effects",))
+        report = compare_benchmarks(before, after)
+        self.assertIn("Отмеченные вручную пункты игрового чек-листа", report)
+        self.assertIn("Качество теней", report)
+        self.assertIn("Качество эффектов", report)
+        self.assertIn("Только A: Качество теней", report)
+        self.assertIn("Только B: Качество эффектов", report)
+        self.assertIn("не доказательство причины", report)
+
+    def test_benchmark_comparison_does_not_diff_checklists_across_games(self):
+        before = analyze_frame_times("before.csv", [16], game="Counter-Strike 2", manual_changes=("cs2.shadows",))
+        after = analyze_frame_times("after.csv", [15], game="Dota 2", manual_changes=("dota2.shadows",))
+        report = compare_benchmarks(before, after)
+        self.assertIn("CS2" if "CS2" in report else "Counter-Strike 2", report)
+        self.assertIn("Dota 2", report)
+        self.assertIn("Списки относятся к разным играм и не сопоставляются", report)
+        self.assertNotIn("Только A:", report)
+        self.assertNotIn("Только B:", report)
+
     def test_allowed_setting_snapshot_returns_only_key_and_value(self):
         self.skyrim_ini.write_bytes(self.skyrim_ini_original + b"[Grass]\nUnknownPersonalValue=secret\n")
         self.assertEqual(read_allowed_setting_snapshot(self.skyrim_ini), ("iMinGrassSize", 20))
@@ -549,7 +570,7 @@ class FrameForgeCoreTests(unittest.TestCase):
 
     def test_benchmark_export_contains_aggregates_without_names_or_raw_frames(self):
         before = analyze_frame_times("C:\\private\\before.csv", [10.0, 11.0, 12.0], game="Cyberpunk 2077", scene="Night City / save 42")
-        before = Benchmark(**(before.__dict__ | {"change_note": "LOCAL_ONLY C:\\Users\\private\\settings.ini", "setting_key": "iMinGrassSize", "setting_value": 40}))
+        before = Benchmark(**(before.__dict__ | {"change_note": "LOCAL_ONLY C:\\Users\\private\\settings.ini", "setting_key": "iMinGrassSize", "setting_value": 40, "manual_changes": ("cyberpunk.volumetrics",)}))
         after = analyze_frame_times("D:\\secret\\after.csv", [9.0, 10.0, 120.0], game="Cyberpunk 2077", scene="Night City / save 43", change_note="another local note")
         csv_export = export_comparison_csv(before, after)
         json_export = export_comparison_json(before, after)
@@ -563,6 +584,7 @@ class FrameForgeCoreTests(unittest.TestCase):
             self.assertNotIn("LOCAL_ONLY", export)
             self.assertNotIn("local note", export)
             self.assertNotIn("iMinGrassSize", export)
+            self.assertNotIn("cyberpunk.volumetrics", export)
             self.assertNotIn("LOCAL_ONLY", export)
             self.assertNotIn("\nframe_time_ms\n", export)
         self.assertIn("average_fps", csv_export)
@@ -606,12 +628,13 @@ class FrameForgeCoreTests(unittest.TestCase):
     def test_benchmark_history_roundtrip_omits_source_paths_and_raw_samples(self):
         path = Path(self.temp.name) / "benchmarks.json"
         store = BenchmarkStore(path)
-        run = analyze_frame_times("benchmark.csv", [10, 15, 25], change_note="Тени: высокие → средние")
+        run = analyze_frame_times("benchmark.csv", [10, 15, 25], game="Counter-Strike 2", change_note="Тени: высокие → средние", manual_changes=("cs2.shadows",))
         store.save([run])
         raw = path.read_text(encoding="utf-8")
         self.assertNotIn(str(self.temp.name), raw)
         self.assertNotIn("frame_times", raw)
         self.assertIn("Тени: высокие", raw)
+        self.assertIn("cs2.shadows", raw)
         self.assertEqual(store.load(), [run])
 
     def test_benchmark_history_v1_migrates_legacy_rows_without_rewriting_until_save(self):
@@ -619,7 +642,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         legacy = analyze_frame_times("legacy.csv", [10, 12])
         document = {
             "schema_version": 1,
-            "runs": [{key: value for key, value in (legacy.__dict__ | {"frame_time_buckets": list(legacy.frame_time_buckets)}).items() if key not in {"game", "scene", "change_note"}}],
+            "runs": [{key: value for key, value in (legacy.__dict__ | {"frame_time_buckets": list(legacy.frame_time_buckets)}).items() if key not in {"game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes"}}],
         }
         path.write_text(json.dumps(document), encoding="utf-8")
         store = BenchmarkStore(path)
@@ -628,22 +651,23 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 1)
         store.save(loaded)
         legacy_after_save = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(legacy_after_save["schema_version"], 5)
+        self.assertEqual(legacy_after_save["schema_version"], 6)
         self.assertIn("game", legacy_after_save["runs"][0])
         self.assertEqual(legacy_after_save["runs"][0]["metric_kind"], "generic")
         self.assertEqual(legacy_after_save["runs"][0]["change_note"], "")
         self.assertEqual(legacy_after_save["runs"][0]["setting_key"], "")
         self.assertIsNone(legacy_after_save["runs"][0]["setting_value"])
+        self.assertEqual(legacy_after_save["runs"][0]["manual_changes"], [])
         tagged = Benchmark(**(loaded[0].__dict__ | {"game": "Skyrim", "scene": "Whiterun · High"}))
         store.save([tagged])
         migrated = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["schema_version"], 6)
         self.assertEqual((store.load()[0].game, store.load()[0].scene), ("Skyrim", "Whiterun · High"))
 
     def test_benchmark_history_v2_migrates_tagged_runs(self):
         path = Path(self.temp.name) / "benchmarks.json"
         run = analyze_frame_times("legacy.csv", [10, 12], game="Skyrim", scene="Whiterun")
-        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"metric_kind", "change_note"}}
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"metric_kind", "change_note", "setting_key", "setting_value", "manual_changes"}}
         path.write_text(json.dumps({"schema_version": 2, "runs": [row]}), encoding="utf-8")
         loaded = BenchmarkStore(path).load()
         self.assertEqual(loaded[0].metric_kind, "generic")
@@ -653,7 +677,7 @@ class FrameForgeCoreTests(unittest.TestCase):
     def test_benchmark_history_v3_migrates_metric_and_adds_empty_note(self):
         path = Path(self.temp.name) / "benchmarks.json"
         run = analyze_frame_times("legacy.csv", [10, 12], game="Skyrim", scene="Whiterun", metric_kind="displayed")
-        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key != "change_note"}
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"change_note", "setting_key", "setting_value", "manual_changes"}}
         row_with_note = row | {"name": "legacy-with-note.csv", "change_note": "preserve this local note"}
         path.write_text(json.dumps({"schema_version": 3, "runs": [row, row_with_note]}), encoding="utf-8")
         loaded = BenchmarkStore(path).load()
@@ -684,12 +708,43 @@ class FrameForgeCoreTests(unittest.TestCase):
     def test_benchmark_history_v4_migrates_with_empty_setting_snapshot(self):
         path = Path(self.temp.name) / "benchmarks.json"
         run = analyze_frame_times("v4.csv", [10, 12], metric_kind="displayed", change_note="updated grass")
-        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"setting_key", "setting_value"}}
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"setting_key", "setting_value", "manual_changes"}}
         path.write_text(json.dumps({"schema_version": 4, "runs": [row]}), encoding="utf-8")
         loaded = BenchmarkStore(path).load()
         self.assertEqual(loaded[0].metric_kind, "displayed")
         self.assertEqual(loaded[0].change_note, "updated grass")
         self.assertEqual((loaded[0].setting_key, loaded[0].setting_value), ("", None))
+
+    def test_benchmark_history_v5_migrates_with_empty_manual_checklist(self):
+        path = Path(self.temp.name) / "benchmarks.json"
+        run = analyze_frame_times("v5.csv", [10, 12], game="Counter-Strike 2", manual_changes=("cs2.shadows",))
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key != "manual_changes"}
+        path.write_text(json.dumps({"schema_version": 5, "runs": [row]}), encoding="utf-8")
+        loaded = BenchmarkStore(path).load()
+        self.assertEqual(loaded[0].game, "Counter-Strike 2")
+        self.assertEqual(loaded[0].manual_changes, ())
+        BenchmarkStore(path).save(loaded)
+        migrated = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["runs"][0]["manual_changes"], [])
+
+    def test_benchmark_history_roundtrips_only_game_allowlisted_checklist_ids(self):
+        store = BenchmarkStore(Path(self.temp.name) / "benchmarks.json")
+        run = analyze_frame_times(
+            "run.csv", [10, 12], game="Counter-Strike 2", manual_changes=("cs2.shadows", "cs2.effects")
+        )
+        store.save([run])
+        self.assertEqual(store.load(), [run])
+        for game, changes in (
+            ("Counter-Strike 2", ("cs2.unknown",)),
+            ("Counter-Strike 2", ("cs2.shadows", "cs2.shadows")),
+            ("Dota 2", ("cs2.shadows",)),
+            ("The Elder Scrolls V: Skyrim Special Edition", ("cs2.shadows",)),
+        ):
+            with self.subTest(game=game, changes=changes):
+                invalid = Benchmark(**(run.__dict__ | {"game": game, "manual_changes": changes}))
+                with self.assertRaisesRegex(ValueError, "чек-листа"):
+                    store.save([invalid])
 
     def test_benchmark_history_rejects_malformed_v1_rows_and_boolean_version(self):
         path = Path(self.temp.name) / "benchmarks.json"

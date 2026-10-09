@@ -8,6 +8,8 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..catalog import GUIDE_CHECKLIST_LABELS
+
 MAX_CSV_BYTES = 64 * 1024 * 1024
 MAX_SAMPLES = 5_000_000
 MAX_CHANGE_NOTE_CHARS = 160
@@ -44,6 +46,7 @@ class Benchmark:
     change_note: str = ""
     setting_key: str = ""
     setting_value: int | None = None
+    manual_changes: tuple[str, ...] = ()
 
 
 def _nearest_rank(values: list[float], percentile: float) -> float:
@@ -60,6 +63,7 @@ def analyze_frame_times(
     change_note: str = "",
     setting_key: str = "",
     setting_value: int | None = None,
+    manual_changes: tuple[str, ...] = (),
 ) -> Benchmark:
     if not frame_times_ms:
         raise ValueError("CSV must contain at least one frame time.")
@@ -84,6 +88,7 @@ def analyze_frame_times(
         change_note=change_note,
         setting_key=setting_key,
         setting_value=setting_value,
+        manual_changes=manual_changes,
         sample_count=len(ordered),
         average_fps=1000 / mean,
         one_percent_low_fps=1000 / slow_average,
@@ -252,6 +257,31 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
             f"  A: {before.setting_key + '=' + str(before.setting_value) if before.setting_key else 'не снят'}\n"
             f"  B: {after.setting_key + '=' + str(after.setting_value) if after.setting_key else 'не снят'}\n\n"
         )
+    checklist = ""
+    if before.manual_changes or after.manual_changes:
+        before_items = set(before.manual_changes)
+        after_items = set(after.manual_changes)
+
+        def labels(items):
+            return ", ".join(GUIDE_CHECKLIST_LABELS.get(item, item) for item in items) or "не отмечено"
+
+        if before.game != after.game:
+            checklist = (
+                "Отмеченные вручную пункты игрового чек-листа (контекст, не доказательство причины):\n"
+                f"  A — {before.game or 'игра не указана'}: {labels(before.manual_changes)}\n"
+                f"  B — {after.game or 'игра не указана'}: {labels(after.manual_changes)}\n"
+                "  Списки относятся к разным играм и не сопоставляются.\n\n"
+            )
+        else:
+            only_a = before_items - after_items
+            only_b = after_items - before_items
+            checklist = (
+                "Отмеченные вручную пункты игрового чек-листа (контекст, не доказательство причины):\n"
+                f"  A: {labels(before.manual_changes)}\n"
+                f"  B: {labels(after.manual_changes)}\n"
+                f"  Только A: {labels(sorted(only_a))}\n"
+                f"  Только B: {labels(sorted(only_b))}\n\n"
+            )
     if before.metric_kind != after.metric_kind:
         metric_warning = (
             f"⚠ Типы frametime различаются: {METRIC_LABELS.get(before.metric_kind, before.metric_kind)} → "
@@ -276,6 +306,7 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
         f"Метрика B: {METRIC_LABELS.get(after.metric_kind, after.metric_kind)}\n"
         + notes
         + settings
+        + checklist
         + metric_warning
         + context_warning
         + f"Baseline (A): {before.name} ({before.sample_count:,} кадров)\n"
