@@ -305,7 +305,9 @@ class ReferenceRunUiTests(unittest.TestCase):
         old_recent = list(self.window._recent_benchmark_pairs)
         self.assertTrue(self.window.export_benchmark_button.isEnabled())
 
-        self.window.swap_benchmark_pair_button.click()
+        with patch.object(self.window, "_benchmark_pair_selection_changed", wraps=self.window._benchmark_pair_selection_changed) as changed:
+            self.window.swap_benchmark_pair_button.click()
+        changed.assert_not_called()
 
         self.assertEqual(self.window.benchmark_before.currentData(), 1)
         self.assertEqual(self.window.benchmark_after.currentData(), 0)
