@@ -106,6 +106,104 @@ class ReferenceRunUiTests(unittest.TestCase):
         self.assertEqual(self.window.benchmark_runs[0].name, "run-0.csv")
         self.assertTrue(self.window.benchmark_runs[0].is_reference)
 
+    def test_previous_match_uses_nearest_earlier_run_and_requires_explicit_compare(self):
+        self.window.benchmark_runs = [
+            analyze_frame_times("first.csv", [10.0] * 4, game="Skyrim", scene="Riverwood"),
+            analyze_frame_times("other-game.csv", [11.0] * 4, game="Cyberpunk", scene="Riverwood"),
+            analyze_frame_times("second.csv", [12.0] * 4, game="Skyrim", scene="Riverwood"),
+            analyze_frame_times("latest.csv", [13.0] * 4, game="Skyrim", scene="Riverwood"),
+        ]
+        self.window._refresh_benchmark_history()
+        self.window.benchmark_before.setCurrentIndex(0)
+        self.window.benchmark_after.setCurrentIndex(1)
+        self.window.benchmark_report.setPlainText("previous report")
+        self.window._last_benchmark_comparison = ("pair", self.window.benchmark_runs[0], self.window.benchmark_runs[1])
+        self.window.export_benchmark_button.setEnabled(True)
+
+        self.assertTrue(self.window.compare_with_previous_matching_run(3))
+
+        self.assertEqual(self.window.benchmark_before.currentData(), 2)
+        self.assertEqual(self.window.benchmark_after.currentData(), 3)
+        self.assertIsNone(self.window._last_benchmark_comparison)
+        self.assertFalse(self.window.export_benchmark_button.isEnabled())
+        self.assertIn("Нажми «Сравнить»", self.window.benchmark_report.toPlainText())
+        self.assertIn("Нажми «Сравнить»", self.window.benchmark_pair_search_status.text())
+
+    def test_previous_match_invalidates_active_group_export_too(self):
+        self.window.benchmark_runs = [
+            analyze_frame_times("first.csv", [10.0] * 4, game="Skyrim", scene="Riverwood"),
+            analyze_frame_times("second.csv", [11.0] * 4, game="Skyrim", scene="Riverwood"),
+        ]
+        self.window._refresh_benchmark_history()
+        self.window._last_benchmark_comparison = ("groups", [], [])
+        self.window.export_benchmark_button.setEnabled(True)
+
+        self.assertTrue(self.window.compare_with_previous_matching_run(1))
+
+        self.assertIsNone(self.window._last_benchmark_comparison)
+        self.assertFalse(self.window.export_benchmark_button.isEnabled())
+        self.assertIn("Пара A/B подобрана", self.window.benchmark_report.toPlainText())
+
+    def test_previous_match_button_requires_exactly_one_history_selection(self):
+        self.window.benchmark_runs = [
+            analyze_frame_times("first.csv", [10.0] * 4, game="Skyrim", scene="Riverwood"),
+            analyze_frame_times("second.csv", [11.0] * 4, game="Skyrim", scene="Riverwood"),
+        ]
+        self.window._refresh_benchmark_history()
+        self.assertFalse(self.window.compare_previous_matching_button.isEnabled())
+
+        self.window.benchmark_list.item(0).setSelected(True)
+        self.assertTrue(self.window.compare_previous_matching_button.isEnabled())
+        self.window.benchmark_list.item(1).setSelected(True)
+        self.assertFalse(self.window.compare_previous_matching_button.isEnabled())
+
+    def test_previous_match_excludes_other_metric_kind(self):
+        self.window.benchmark_runs = [
+            analyze_frame_times("displayed.csv", [10.0] * 4, game="Skyrim", scene="Riverwood", metric_kind="displayed"),
+            analyze_frame_times("presented.csv", [11.0] * 4, game="Skyrim", scene="Riverwood", metric_kind="cpu-presented"),
+        ]
+        self.window._refresh_benchmark_history()
+
+        self.assertFalse(self.window.compare_with_previous_matching_run(1))
+        self.assertEqual(self.window.benchmark_before.currentData(), 0)
+        self.assertEqual(self.window.benchmark_after.currentData(), 1)
+        self.assertIn("не найден", self.window.benchmark_pair_search_status.text())
+
+    def test_previous_match_rejects_missing_game_or_scene_without_changing_pair(self):
+        self.window.benchmark_runs = [
+            analyze_frame_times("first.csv", [10.0] * 4, game="Skyrim", scene="Riverwood"),
+            analyze_frame_times("missing-scene.csv", [11.0] * 4, game="Skyrim"),
+        ]
+        self.window._refresh_benchmark_history()
+        self.window.benchmark_before.setCurrentIndex(0)
+        self.window.benchmark_after.setCurrentIndex(0)
+
+        self.assertFalse(self.window.compare_with_previous_matching_run(1))
+        self.assertEqual(self.window.benchmark_before.currentData(), 0)
+        self.assertEqual(self.window.benchmark_after.currentData(), 0)
+        self.assertIn("Нужны заполненные", self.window.benchmark_pair_search_status.text())
+
+    def test_previous_match_rejects_invalid_and_first_run_indices(self):
+        self.window.benchmark_runs = [analyze_frame_times("only.csv", [10.0] * 4, game="Skyrim", scene="Riverwood")]
+        self.window._refresh_benchmark_history()
+        self.window.benchmark_after.setCurrentIndex(0)
+
+        self.assertFalse(self.window.compare_with_previous_matching_run(0))
+        self.assertFalse(self.window.compare_with_previous_matching_run(True))
+        self.assertFalse(self.window.compare_with_previous_matching_run(5))
+        self.assertEqual(self.window.benchmark_before.currentData(), 0)
+        self.assertEqual(self.window.benchmark_after.currentData(), 0)
+
+    def test_previous_match_requires_exact_game_and_scene_labels(self):
+        self.window.benchmark_runs = [
+            analyze_frame_times("first.csv", [10.0] * 4, game="Skyrim", scene="Riverwood"),
+            analyze_frame_times("different-scene.csv", [11.0] * 4, game="Skyrim", scene="riverwood"),
+        ]
+        self.window._refresh_benchmark_history()
+
+        self.assertFalse(self.window.compare_with_previous_matching_run(1))
+        self.assertIn("не найден", self.window.benchmark_pair_search_status.text())
+
 
 if __name__ == "__main__":
     unittest.main()

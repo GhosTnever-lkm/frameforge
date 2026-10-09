@@ -12,7 +12,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
-    QScrollArea, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
+    QMenu, QScrollArea, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
@@ -382,6 +382,8 @@ class MainWindow(QMainWindow):
         self.benchmark_list = QListWidget()
         self.benchmark_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.benchmark_list.itemSelectionChanged.connect(self._update_reference_controls)
+        self.benchmark_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.benchmark_list.customContextMenuRequested.connect(self._show_benchmark_context_menu)
         self._benchmark_group_a: set[int] = set()
         self._benchmark_group_b: set[int] = set()
         self._last_benchmark_comparison = None
@@ -397,6 +399,15 @@ class MainWindow(QMainWindow):
         history_filter_row.addWidget(self.benchmark_history_count)
         layout.addLayout(history_filter_row)
         layout.addWidget(self.benchmark_list)
+        self.compare_previous_matching_button = QPushButton(
+            "Подобрать предыдущий замер той же игры, сцены и метрики"
+        )
+        self.compare_previous_matching_button.setToolTip(
+            "Выбери один прогон. FrameForge подставит ближайший более ранний с такими же метками; сравнение нужно подтвердить отдельно."
+        )
+        self.compare_previous_matching_button.setEnabled(False)
+        self.compare_previous_matching_button.clicked.connect(self.compare_selected_with_previous_matching_run)
+        layout.addWidget(self.compare_previous_matching_button)
         reference_row = QHBoxLayout()
         self.reference_status = QLabel("Эталоны: 0/5 · закреплённые прогоны сохраняются сверх лимита истории")
         self.reference_status.setObjectName("muted")
@@ -830,6 +841,68 @@ class MainWindow(QMainWindow):
         indexes = sorted({item.data(Qt.ItemDataRole.UserRole) for item in self.benchmark_list.selectedItems()})
         return [self.benchmark_runs[index] for index in indexes if isinstance(index, int) and 0 <= index < len(self.benchmark_runs)]
 
+    def _show_benchmark_context_menu(self, position):
+        item = self.benchmark_list.itemAt(position)
+        if item is None:
+            return
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+            return
+        run = self.benchmark_runs[index]
+        menu = QMenu(self)
+        action = menu.addAction("Сравнить с предыдущим замером той же игры, сцены и метрики")
+        action.setEnabled(bool(run.game.strip() and run.scene.strip()))
+        action.triggered.connect(lambda _checked=False, run_index=index: self.compare_with_previous_matching_run(run_index))
+        if not run.game.strip() or not run.scene.strip():
+            action.setToolTip("Для поиска совпадения нужны заполненные метки игры и сцены.")
+        menu.exec(self.benchmark_list.mapToGlobal(position))
+
+    def compare_with_previous_matching_run(self, index: int) -> bool:
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+            return False
+        current = self.benchmark_runs[index]
+        if not current.game.strip() or not current.scene.strip():
+            self.benchmark_pair_search_status.setText("Нужны заполненные метки игры и сцены; пара не изменена.")
+            return False
+        previous_index = next((
+            candidate_index
+            for candidate_index in range(index - 1, -1, -1)
+            if self.benchmark_runs[candidate_index].game == current.game
+            and self.benchmark_runs[candidate_index].scene == current.scene
+            and self.benchmark_runs[candidate_index].metric_kind == current.metric_kind
+        ), None)
+        if previous_index is None:
+            self.benchmark_pair_search_status.setText(
+                f"Для #{index + 1:03d} не найден более ранний замер с той же игрой, сценой и метрикой; пара не изменена."
+            )
+            return False
+        self.benchmark_before.blockSignals(True)
+        self.benchmark_after.blockSignals(True)
+        try:
+            self.benchmark_before.setCurrentIndex(previous_index)
+            self.benchmark_after.setCurrentIndex(index)
+        finally:
+            self.benchmark_before.blockSignals(False)
+            self.benchmark_after.blockSignals(False)
+        self._last_benchmark_comparison = None
+        self.export_benchmark_button.setEnabled(False)
+        self.benchmark_report.setPlainText("Пара A/B подобрана. Нажми «Сравнить», чтобы построить новый отчёт и экспорт.")
+        self.benchmark_chart.hide()
+        self.benchmark_chart_title.hide()
+        self.benchmark_chart_note.hide()
+        self.benchmark_pair_search_status.setText(
+            f"Подобрана пара #{previous_index + 1:03d} → #{index + 1:03d}. Нажми «Сравнить», чтобы построить отчёт."
+        )
+        self._refresh_benchmark_pair_identities()
+        return True
+
+    def compare_selected_with_previous_matching_run(self):
+        selected = self.benchmark_list.selectedItems()
+        if len(selected) != 1:
+            self.benchmark_pair_search_status.setText("Выбери один замер в истории, чтобы подобрать предыдущий.")
+            return
+        self.compare_with_previous_matching_run(selected[0].data(Qt.ItemDataRole.UserRole))
+
     def _assign_selected_benchmark_group(self, group: str):
         runs = self._selected_benchmark_runs()
         if not runs:
@@ -939,6 +1012,8 @@ class MainWindow(QMainWindow):
             f"Эталоны: {reference_count}/{MAX_REFERENCE_RUNS} · закреплённые прогоны не вытесняются импортом"
         )
         selected = self.benchmark_list.selectedItems()
+        if hasattr(self, "compare_previous_matching_button"):
+            self.compare_previous_matching_button.setEnabled(len(selected) == 1)
         if len(selected) != 1:
             self.toggle_reference_button.setEnabled(False)
             self.toggle_reference_button.setText("Выбери один замер для эталона")

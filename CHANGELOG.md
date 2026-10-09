@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.0 - 2026-10-09
+
+- Add a one-action helper to select the nearest earlier benchmark run with the same explicitly labeled game, scene and metric kind.
+- Keep candidate matching strict and non-mutating: missing labels or no prior match leave the current pair intact, and the user must still press Compare to generate a report.
+- Provide the action from both a history context menu and a keyboard-accessible button; no history schema or export fields change.
+
 ## 1.7.0 - 2026-10-09
 
 - Add up to five pinned benchmark reference runs that survive the 100 ordinary-run history limit.
