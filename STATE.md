@@ -107,3 +107,11 @@ Updated: 2026-10-09
 ## Next
 
 1. Continue the next focused FrameForge improvement, then update this record with verified evidence.
+
+## Последняя итерация — FrameForge v1.16.0, CS:GO Legacy profiles (validation pending)
+
+- Added Steam manifest detection for CS:GO Legacy app 4465480, an in-app tuning page with refresh-oriented presets/FPS limits/graphics toggles and a CFG preview, generated `frameforge_menu.cfg` and FPS profile, and a managed `autoexec.cfg` section with timestamped backups. Launch uses Steam `-applaunch` arguments to load the in-game console profile; the former separate companion panel is no longer launched.
+- Live Windows build `dist/FrameForge/FrameForge.exe` opened. UI Automation confirmed the detected path `D:\SteamLibrary\steamapps\common\csgo legacy\csgo\cfg`; the tuning screen selected `Максимальный FPS` and saved `fps_max 0` plus `r_dynamic 0` to the actual game folder. Existing autoexec backups are present.
+- Local PyInstaller archive `FrameForge-1.16.0-windows-x64.zip`, SHA-256 `ddae34d5f8a84b9028f2f6ee06cca3a646ac042905a21f105f503ad7d83d93d5`. `compileall` and `git diff --check` pass. One normal unittest run failed to load Qt due DLL search path; a second run with explicit DLL directories/offscreen progressed through tests but hung in the GUI suite and was interrupted. CI quality run is required before release.
+- CS:GO was already running before the generated launch options were applied and did not close through the normal window-close request. The in-game console startup path and any FPS change are therefore not confirmed in the live game. Baseline reported by the user is about 240 FPS; +20% (about 288 FPS) has not been measured and is not guaranteed. Do not advertise a minimum FPS gain.
+- Release/push, portfolio update, and announcement are pending successful CI and a clean in-game startup verification. The full mouse-driven HUD overlay is not implemented; the current in-game menu is a Source console text menu, with tuning performed in FrameForge.

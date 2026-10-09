@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "frameforge"
-version = "1.14.0"
+version = "1.16.0"
 description = "Local-first, reversible Windows game tuning studio"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,3 +20,6 @@ frameforge = "frameforge.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+frameforge = ["assets/*.png", "assets/*.ico"]

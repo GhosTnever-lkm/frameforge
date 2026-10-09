@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import csv
 import os
+import re
+import subprocess
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon, QDesktopServices, QCursor
+from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
-    QMenu, QScrollArea, QStackedWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QMenu, QScrollArea, QStackedWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget, QSystemTrayIcon,
 )
 
 from .. import __version__
@@ -30,7 +33,7 @@ from ..core.config_finder import find_skyrim_config
 from ..core.profiles import TUNING_PROFILES
 from ..core.safety import SafetyError
 from ..core.settings_snapshot import read_allowed_setting_snapshot
-from ..core.scanner import detect_skyrim_installs, system_snapshot
+from ..core.scanner import detect_skyrim_installs, parse_libraryfolders, steam_libraryfolders_files, system_snapshot
 from .benchmark_chart import FrameTimeChart
 from .benchmark_search import matching_benchmark_indices
 
@@ -126,6 +129,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FrameForge — Game Tuning Studio")
+        self.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "assets" / "frameforge-icon.png")))
         self.resize(1200, 780)
         self.setMinimumSize(960, 640)
         self.config_path: Path | None = None
@@ -136,9 +140,240 @@ class MainWindow(QMainWindow):
         self.backup_config: Path | None = None
         self.last_backup_sha256: str | None = None
         self.last_current_sha256: str | None = None
+        self.csgo_cfg_dir: Path | None = None
+        self.csgo_cfg_dir = self._find_csgo_legacy_cfg()
         self._build()
         self._style()
         self.show_page(0)
+
+    @staticmethod
+    def _find_csgo_legacy_cfg() -> Path | None:
+        """Locate the installed Legacy config folder through Steam library manifests."""
+        for vdf in steam_libraryfolders_files():
+            try:
+                roots = [vdf.parent.parent, *parse_libraryfolders(vdf.read_text(encoding="utf-8", errors="replace"))]
+            except OSError:
+                continue
+            for root in roots:
+                manifest = root / "steamapps" / "appmanifest_4465480.acf"
+                if not manifest.is_file():
+                    continue
+                try:
+                    match = re.search(r'"installdir"\s*"([^"]+)"', manifest.read_text(encoding="utf-8", errors="replace"), re.I)
+                except OSError:
+                    continue
+                if match:
+                    cfg = root / "steamapps" / "common" / match.group(1) / "csgo" / "cfg"
+                    if cfg.is_dir():
+                        return cfg
+        return None
+
+    def create_game_overlay(self):
+        """Create a small always-on-top game guide and benchmark launcher."""
+        overlay = QDialog(None, Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        overlay.setWindowTitle("FrameForge · игровая панель")
+        overlay.setWindowIcon(self.windowIcon())
+        overlay.setMinimumWidth(360)
+        layout = QVBoxLayout(overlay)
+        heading = QLabel("FRAMEFORGE  ·  GAME PANEL")
+        heading.setStyleSheet(f"color:{ACCENT};font-size:11pt;font-weight:800")
+        layout.addWidget(heading)
+        intro = QLabel("Подсказки и быстрые замеры поверх игры")
+        intro.setObjectName("muted")
+        layout.addWidget(intro)
+
+        self.overlay_game = QComboBox()
+        self.overlay_game.setAccessibleName("Игра для игровой панели FrameForge")
+        self.overlay_game.addItem("Counter-Strike: Global Offensive (CS:GO Legacy)")
+        for name in GUIDE_GAMES:
+            if name != "Counter-Strike: Global Offensive (CS:GO Legacy)":
+                self.overlay_game.addItem(name)
+        layout.addWidget(self.overlay_game)
+
+        self.overlay_tip = QLabel()
+        self.overlay_tip.setWordWrap(True)
+        self.overlay_tip.setMinimumHeight(110)
+        self.overlay_tip.setObjectName("card")
+        layout.addWidget(self.overlay_tip)
+        self.overlay_checklist = QLabel()
+        self.overlay_checklist.setWordWrap(True)
+        self.overlay_checklist.setObjectName("muted")
+        layout.addWidget(self.overlay_checklist)
+        self.overlay_game.currentTextChanged.connect(self._update_overlay_guide)
+        self._update_overlay_guide(self.overlay_game.currentText())
+        row = QHBoxLayout()
+        guide = QPushButton("Советы по игре")
+        guide.clicked.connect(lambda: self._open_overlay_page(1))
+        row.addWidget(guide)
+        benchmark = QPushButton("Сравнить FPS")
+        benchmark.setObjectName("primary")
+        benchmark.clicked.connect(self._open_overlay_benchmark)
+        row.addWidget(benchmark)
+        layout.addLayout(row)
+        launch = QPushButton("▶ Запустить Counter-Strike: Global Offensive (Legacy)")
+        launch.setObjectName("primary")
+        launch.clicked.connect(self.launch_csgo_legacy)
+        layout.addWidget(launch)
+        cfg_row = QHBoxLayout()
+        self.csgo_cfg_label = QLabel(str(self.csgo_cfg_dir) if self.csgo_cfg_dir else "Папка cfg не выбрана")
+        self.csgo_cfg_label.setWordWrap(True)
+        self.csgo_cfg_label.setObjectName("muted")
+        cfg_row.addWidget(self.csgo_cfg_label, 1)
+        choose_cfg = QPushButton("Выбрать cfg…")
+        choose_cfg.clicked.connect(self.choose_csgo_cfg)
+        cfg_row.addWidget(choose_cfg)
+        layout.addLayout(cfg_row)
+        self.csgo_fps_limit = QComboBox()
+        for value, label in ((0, "Без лимита FPS"), (120, "Лимит 120 FPS"), (144, "Лимит 144 FPS"), (165, "Лимит 165 FPS"), (240, "Лимит 240 FPS"), (360, "Лимит 360 FPS")):
+            self.csgo_fps_limit.addItem(label, value)
+        layout.addWidget(self.csgo_fps_limit)
+        self.csgo_dynamic_lights = QCheckBox("Отключить динамическое освещение (r_dynamic 0)")
+        layout.addWidget(self.csgo_dynamic_lights)
+        self.csgo_bloom = QCheckBox("Отключить bloom (mat_disable_bloom 1)")
+        layout.addWidget(self.csgo_bloom)
+        self.csgo_blending = QCheckBox("Упростить blending (mat_disable_fancy_blending 1)")
+        layout.addWidget(self.csgo_blending)
+        self.csgo_dark_sky = QCheckBox("Тёмное небо в локальной практике (sv_skyname)")
+        layout.addWidget(self.csgo_dark_sky)
+        self.csgo_hide_sky = QCheckBox("Скрыть skybox (только локальная практика)")
+        layout.addWidget(self.csgo_hide_sky)
+        apply_cfg = QPushButton("Создать профиль .cfg с backup")
+        apply_cfg.clicked.connect(self.write_csgo_profile)
+        layout.addWidget(apply_cfg)
+        self.csgo_profile_status = QLabel("Выбери папку csgo/cfg, затем создай конфиг. В игре открой консоль и выполни: exec frameforge_fps")
+        self.csgo_profile_status.setObjectName("muted")
+        self.csgo_profile_status.setWordWrap(True)
+        layout.addWidget(self.csgo_profile_status)
+        optimizer = QPushButton("Настроить Skyrim с предпросмотром и backup")
+        optimizer.clicked.connect(lambda: self._open_overlay_page(3))
+        layout.addWidget(optimizer)
+        return overlay
+
+    def choose_csgo_cfg(self):
+        selected = QFileDialog.getExistingDirectory(self, "Выбрать папку CS:GO Legacy csgo/cfg")
+        if not selected:
+            return
+        folder = Path(selected)
+        if not folder.is_dir() or folder.name.casefold() != "cfg":
+            QMessageBox.warning(self, "Нужна папка cfg", "Выбери именно каталог cfg внутри папки csgo игры.")
+            return
+        self.csgo_cfg_dir = folder
+        self.csgo_cfg_label.setText(str(folder))
+
+    def write_csgo_profile(self):
+        folder = self.csgo_cfg_dir
+        if folder is None or not folder.is_dir():
+            QMessageBox.information(self, "FrameForge", "Сначала выбери папку cfg игры.")
+            return
+        fps_cfg = folder / "frameforge_fps.cfg"
+        fps_lines = [
+            "// FrameForge Counter-Strike: Global Offensive Legacy performance profile",
+            f"fps_max {self.csgo_fps_limit.currentData()}",
+            "// Change one setting at a time and compare the same scene with FrameForge benchmark.",
+        ]
+        if self.csgo_dynamic_lights.isChecked():
+            fps_lines.append("r_dynamic 0")
+        if self.csgo_bloom.isChecked():
+            fps_lines.append("mat_disable_bloom 1")
+        if self.csgo_blending.isChecked():
+            fps_lines.append("mat_disable_fancy_blending 1")
+        files = {fps_cfg: "\n".join(fps_lines) + "\n"}
+        menu_lines = [
+            "// FrameForge in-game console menu for CS:GO Legacy",
+            "alias ff_menu \"echo ================= FRAMEFORGE =================; echo ff_perf - apply FPS profile; echo ff_night - dark sky (local practice); echo ff_skyoff - hide skybox (local practice); echo ff_skyrestore - restore skybox; echo ================================================\"",
+            "alias ff_perf \"exec frameforge_fps\"",
+            "alias ff_night \"exec frameforge_practice_sky\"",
+            "alias ff_skyoff \"sv_cheats 1; r_drawskybox 0\"",
+            "alias ff_skyrestore \"r_drawskybox 1\"",
+            "exec frameforge_fps",
+            "echo FrameForge console menu ready. Type ff_menu for commands.",
+        ]
+        files[folder / "frameforge_menu.cfg"] = "\n".join(menu_lines) + "\n"
+        if self.csgo_dark_sky.isChecked() or self.csgo_hide_sky.isChecked():
+            sky_lines = [
+                "// FrameForge CS:GO Legacy local-practice sky options",
+                "// sv_cheats and server-side sky commands require a local/practice server that permits them.",
+                "sv_cheats 1",
+            ]
+            if self.csgo_dark_sky.isChecked():
+                sky_lines.append("sv_skyname sky_csgo_night02")
+            if self.csgo_hide_sky.isChecked():
+                sky_lines.append("r_drawskybox 0")
+            sky_lines.extend(["// Restore skybox with: r_drawskybox 1", "// Restore default sky by changing map or restarting the local server."])
+            files[folder / "frameforge_practice_sky.cfg"] = "\n".join(sky_lines) + "\n"
+        marker_start = "// >>> FrameForge managed CS:GO Legacy menu >>>"
+        marker_end = "// <<< FrameForge managed CS:GO Legacy menu <<<"
+        autoexec = folder / "autoexec.cfg"
+        existing_autoexec = autoexec.read_text(encoding="utf-8", errors="replace") if autoexec.exists() else ""
+        managed_block = "\n".join((marker_start, "exec frameforge_menu", "ff_menu", marker_end))
+        if marker_start in existing_autoexec and marker_end in existing_autoexec:
+            before, remainder = existing_autoexec.split(marker_start, 1)
+            _, after = remainder.split(marker_end, 1)
+            autoexec_text = before.rstrip() + "\n\n" + managed_block + after
+        else:
+            autoexec_text = existing_autoexec.rstrip() + ("\n\n" if existing_autoexec.strip() else "") + managed_block + "\n"
+        files[autoexec] = autoexec_text
+        backups = []
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        try:
+            for destination, contents in files.items():
+                if destination.exists():
+                    backup = destination.with_name(f"{destination.stem}.frameforge-{stamp}.bak{destination.suffix}")
+                    backup.write_bytes(destination.read_bytes())
+                    backups.append(backup.name)
+                temporary = destination.with_name(destination.name + ".tmp")
+                temporary.write_text(contents, encoding="utf-8", newline="\n")
+                os.replace(temporary, destination)
+            self.csgo_profile_status.setText("Создано: " + ", ".join(path.name for path in files) + (" · backup: " + ", ".join(backups) if backups else " · существующие пользовательские файлы не затронуты"))
+        except OSError as exc:
+            QMessageBox.critical(self, "Не удалось записать конфиг", str(exc))
+
+    def _update_overlay_guide(self, game_name: str):
+        if not hasattr(self, "overlay_tip"):
+            return
+        self.overlay_tip.setText(GUIDES.get(game_name, GUIDE))
+        checklist = GUIDE_CHECKLISTS.get(game_name, ())
+        self.overlay_checklist.setText("Пункты для текущего прогона: " + " · ".join(label for _, label in checklist))
+
+    def launch_csgo_legacy(self):
+        if self.csgo_cfg_dir is None or not self.csgo_cfg_dir.is_dir():
+            QMessageBox.information(self, "Нужна папка игры", "Сначала выбери каталог csgo/cfg игры, чтобы установить меню и профиль в её файлы.")
+            self.choose_csgo_cfg()
+        if self.csgo_cfg_dir is None or not self.csgo_cfg_dir.is_dir():
+            return
+        self.write_csgo_profile()
+        if not (self.csgo_cfg_dir / "autoexec.cfg").exists():
+            return
+        try:
+            subprocess.Popen(["steam", "-applaunch", "4465480", "+exec", "frameforge_menu", "+toggleconsole"])
+        except OSError:
+            QDesktopServices.openUrl(QUrl("steam://run/4465480/+exec%20frameforge_menu/+toggleconsole"))
+        self.hide()
+
+    def _open_overlay_page(self, page: int):
+        self.show_page(page)
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.game_overlay.hide()
+
+    def _show_game_overlay(self):
+        if not hasattr(self, "game_overlay"):
+            return
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        if screen:
+            area = screen.availableGeometry()
+            self.game_overlay.adjustSize()
+            self.game_overlay.move(area.right() - self.game_overlay.width() - 16, area.top() + 48)
+        self.game_overlay.show()
+        self.game_overlay.raise_()
+        self.game_overlay.activateWindow()
+
+    def _open_overlay_benchmark(self):
+        game = self.overlay_game.currentText()
+        self.benchmark_game.setCurrentIndex(max(0, self.benchmark_game.findData(game)))
+        self._open_overlay_page(2)
 
     def _build(self):
         central = QWidget()
@@ -165,7 +400,7 @@ class MainWindow(QMainWindow):
             side.addWidget(button)
             self.nav.append(button)
         side.addStretch(1)
-        safety = QLabel("ЛОКАЛЬНО\nТолько выбранные изменения\nБез античит-твиков")
+        safety = QLabel("ЛОКАЛЬНО\nИзмеряй FPS до и после\nНастройки меняются с backup")
         safety.setObjectName("safety")
         side.addWidget(safety)
         version = QLabel(f"v{__version__} · MIT")
@@ -286,6 +521,63 @@ class MainWindow(QMainWindow):
         open_skyrim.clicked.connect(lambda: self.show_page(3))
         layout.addWidget(open_skyrim)
         layout.addWidget(QLabel("Рекомендации внутри игры · без правки файлов"))
+        csgo_row = QHBoxLayout()
+        csgo_launch = QPushButton("▶ Запустить CS:GO Legacy через Steam")
+        csgo_launch.setObjectName("primary")
+        csgo_launch.clicked.connect(self.launch_csgo_legacy)
+        csgo_row.addWidget(csgo_launch)
+        layout.addLayout(csgo_row)
+        cfg_row = QHBoxLayout()
+        self.csgo_cfg_label = QLabel(str(self.csgo_cfg_dir) if self.csgo_cfg_dir else "Папка csgo/cfg не выбрана")
+        self.csgo_cfg_label.setObjectName("muted")
+        self.csgo_cfg_label.setWordWrap(True)
+        cfg_row.addWidget(self.csgo_cfg_label, 1)
+        choose_cfg = QPushButton("Выбрать папку игры…")
+        choose_cfg.clicked.connect(self.choose_csgo_cfg)
+        cfg_row.addWidget(choose_cfg)
+        layout.addLayout(cfg_row)
+        csgo_hint = QLabel("FrameForge установит профиль в папку игры, покажет консольное меню при старте CS:GO и автоматически применит выбранные настройки. Тёмное или скрытое небо доступно только в локальной практике.")
+        csgo_hint.setObjectName("muted")
+        csgo_hint.setWordWrap(True)
+        layout.addWidget(csgo_hint)
+        title = QLabel("Профиль производительности")
+        title.setStyleSheet("font-size:13pt;font-weight:700")
+        layout.addWidget(title)
+        controls = QGridLayout()
+        controls.addWidget(QLabel("Профиль"), 0, 0)
+        self.csgo_preset = QComboBox()
+        self.csgo_preset.addItems(["Настраиваемый", "Максимальный FPS", "Плавность 144 Гц", "Плавность 240 Гц", "Сбалансированный", "Визуальное качество"])
+        self.csgo_preset.currentIndexChanged.connect(self._apply_csgo_preset)
+        controls.addWidget(self.csgo_preset, 0, 1)
+        controls.addWidget(QLabel("Ограничение FPS"), 1, 0)
+        self.csgo_fps_limit = QComboBox()
+        for value, label in ((0, "Без лимита"), (120, "120 FPS"), (144, "144 FPS"), (165, "165 FPS"), (240, "240 FPS"), (300, "300 FPS"), (360, "360 FPS")):
+            self.csgo_fps_limit.addItem(label, value)
+        self.csgo_fps_limit.currentIndexChanged.connect(self._update_csgo_profile_preview)
+        controls.addWidget(self.csgo_fps_limit, 1, 1)
+        self.csgo_dynamic_lights = QCheckBox("Снизить нагрузку от динамического освещения")
+        self.csgo_bloom = QCheckBox("Отключить bloom")
+        self.csgo_blending = QCheckBox("Упростить fancy blending")
+        self.csgo_dark_sky = QCheckBox("Ночное небо · локальная практика")
+        self.csgo_hide_sky = QCheckBox("Скрыть небо · локальная практика")
+        for row, check in enumerate((self.csgo_dynamic_lights, self.csgo_bloom, self.csgo_blending, self.csgo_dark_sky, self.csgo_hide_sky), 2):
+            controls.addWidget(check, row, 0, 1, 2)
+            check.stateChanged.connect(self._update_csgo_profile_preview)
+        layout.addLayout(controls)
+        self.csgo_profile_preview = QTextEdit()
+        self.csgo_profile_preview.setReadOnly(True)
+        self.csgo_profile_preview.setMaximumHeight(110)
+        layout.addWidget(self.csgo_profile_preview)
+        save_profile = QPushButton("Сохранить профиль игры с резервной копией")
+        save_profile.setObjectName("primary")
+        save_profile.clicked.connect(self.write_csgo_profile)
+        layout.addWidget(save_profile)
+        self.csgo_preset.setCurrentIndex(1)
+        self.csgo_profile_status = QLabel("Профиль ещё не записан")
+        self.csgo_profile_status.setObjectName("muted")
+        self.csgo_profile_status.setWordWrap(True)
+        layout.addWidget(self.csgo_profile_status)
+        self._update_csgo_profile_preview()
         search = QLineEdit()
         search.setPlaceholderText("Поиск игры в каталоге…")
         layout.addWidget(search)
@@ -302,14 +594,42 @@ class MainWindow(QMainWindow):
         layout.addWidget(recommendation)
         def show_guide(item):
             guide_title.setText(item.text())
-            recommendation.setPlainText(GUIDES[item.text()] + "\n\nИзменяй настройки только через меню игры. Поддержка файлов и античита не заявлена.")
+            recommendation.setPlainText(GUIDES[item.text()] + "\n\nМеняй по одному параметру и сравнивай FPS в одинаковой сцене. Автоматические профили FrameForge доступны только для игр с отдельным редактором настроек.")
         game_list.currentItemChanged.connect(lambda current, previous: show_guide(current) if current else None)
         search.textChanged.connect(lambda text: [game_list.item(i).setHidden(text.casefold() not in game_list.item(i).text().casefold()) for i in range(game_list.count())])
-        notice = QLabel("У популярных игр настройки и античит меняются обновлениями. В этой версии FrameForge только открывает безопасный внутриигровой чек-лист для этих игр.")
+        notice = QLabel("Поддержка каталога означает точные игровые рекомендации и чек-лист для сравнения прогонов. Изменение файла игры доступно только там, где FrameForge показывает конкретный параметр, предварительный diff и backup.")
         notice.setObjectName("muted")
         notice.setWordWrap(True)
         layout.addWidget(notice)
         return scroll
+
+    def _apply_csgo_preset(self, index: int):
+        profiles = {
+            1: (0, True, True, True),
+            2: (144, True, False, False),
+            3: (240, True, False, False),
+            4: (165, True, False, False),
+            5: (0, False, False, False),
+        }
+        if index in profiles:
+            fps, dynamic, bloom, blending = profiles[index]
+            self.csgo_fps_limit.setCurrentIndex(max(0, self.csgo_fps_limit.findData(fps)))
+            self.csgo_dynamic_lights.setChecked(dynamic)
+            self.csgo_bloom.setChecked(bloom)
+            self.csgo_blending.setChecked(blending)
+        self._update_csgo_profile_preview()
+
+    def _update_csgo_profile_preview(self, *_):
+        if not hasattr(self, "csgo_profile_preview"):
+            return
+        commands = [f"fps_max {self.csgo_fps_limit.currentData()}"]
+        options = ((self.csgo_dynamic_lights, "r_dynamic 0"), (self.csgo_bloom, "mat_disable_bloom 1"), (self.csgo_blending, "mat_disable_fancy_blending 1"))
+        commands.extend(command for check, command in options if check.isChecked())
+        if self.csgo_dark_sky.isChecked():
+            commands.append("Локальная практика: тёмное небо")
+        if self.csgo_hide_sky.isChecked():
+            commands.append("Локальная практика: отключённый skybox")
+        self.csgo_profile_preview.setPlainText("Предпросмотр выбранного профиля\n" + "\n".join(commands) + "\nСравни FPS на одной карте до и после; заранее заданный прирост не гарантируется.")
 
     def _optimizer_page(self):
         scroll, layout = self._scroll_page()
@@ -402,7 +722,7 @@ class MainWindow(QMainWindow):
         title = QLabel("Замеры до и после")
         title.setStyleSheet("font-size:15pt;font-weight:700")
         layout.addWidget(title)
-        note = QLabel("FrameForge анализирует CSV с frame_time_ms или PresentMon (MsBetweenDisplayChange / MsBetweenPresents). Тип метрики сохраняется; сравнение разных типов помечается как несопоставимое. Захват выполняет внешняя программа; FrameForge ничего не внедряет в игру и не показывает оверлей. Используй одинаковую сцену, разрешение и условия.")
+        note = QLabel("FrameForge анализирует CSV с frame_time_ms или PresentMon (MsBetweenDisplayChange / MsBetweenPresents). Для честного FPS-сравнения повторяй один маршрут при одинаковом разрешении и настройках, меняя только один пункт. Отчёт показывает разницу, но не приписывает её автоматически конкретной настройке. Мини-панель FrameForge открывается поверх окон и не внедряется в игру.")
         note.setWordWrap(True)
         note.setObjectName("muted")
         layout.addWidget(note)
@@ -1818,6 +2138,20 @@ class MainWindow(QMainWindow):
 
 def run_app():
     application = QApplication.instance() or QApplication([])
+    application.setQuitOnLastWindowClosed(False)
     window = MainWindow()
+    tray = QSystemTrayIcon(window.windowIcon(), window)
+    tray.setToolTip("FrameForge · игровые профили и FPS-бенчмарк")
+    menu = QMenu()
+    open_panel = menu.addAction("Открыть профили игр")
+    show_main = menu.addAction("Открыть FrameForge")
+    menu.addSeparator()
+    quit_action = menu.addAction("Выход")
+    tray.setContextMenu(menu)
+    open_panel.triggered.connect(lambda: (window.show_page(1), window.showNormal(), window.raise_(), window.activateWindow()))
+    show_main.triggered.connect(lambda: (window.showNormal(), window.raise_(), window.activateWindow()))
+    quit_action.triggered.connect(application.quit)
+    tray.activated.connect(lambda reason: (window.show_page(1), window.showNormal(), window.raise_(), window.activateWindow()) if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick) else None)
+    tray.show()
     window.show()
     application.exec()

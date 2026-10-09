@@ -22,7 +22,7 @@ try {
     $env:PATH = ($OriginalPath -split ';' | Where-Object {
         $_ -notmatch '\\poppler\\Library\\bin$'
     }) -join ';'
-    & $PythonPath -m PyInstaller --noconfirm --clean --windowed --name FrameForge run_frameforge.py
+    & $PythonPath -m PyInstaller --noconfirm --clean --windowed --name FrameForge --icon src\frameforge\assets\frameforge-icon.ico --add-data "src\frameforge\assets\frameforge-icon.png;frameforge\assets" run_frameforge.py
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
 }
 finally {

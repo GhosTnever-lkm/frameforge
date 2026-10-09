@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.16.0 - 2026-10-09
+
+- Detect CS:GO Legacy through Steam library manifests and show its actual `csgo/cfg` path automatically.
+- Replace the separate game overlay with an in-app tuning screen containing refresh-rate profiles, FPS caps, optional graphics toggles, and a live CFG preview.
+- Generate the selected in-game performance profile when launching CS:GO Legacy; the console menu loads the selected FPS profile.
+- Open the game's console with the profile menu on launch; preserve the existing `autoexec.cfg` content.
+
+## 1.15.0 - 2026-10-09
+
+- Add CS:GO Legacy launch integration that writes a console-command menu and configurable FPS profile into the game's `csgo/cfg` folder before starting through Steam; the game console opens on launch.
+- Preserve the existing `autoexec.cfg` and generated CFG files as timestamped backups; update only FrameForge's marked block on later launches.
+- Expand the game guide and benchmark checklist catalog to 21 guide titles, including Marvel Rivals, Warzone, Overwatch 2, Elden Ring, Red Dead Redemption 2, Baldur's Gate 3, Hogwarts Legacy, and Forza Horizon 5.
+- Add the FrameForge application icon and include its assets in the Windows package.
 ## 1.14.0 - 2026-10-09
 
 - Add a one-click plain-text copy of the complete pair or group report, including CSV run names and user-entered notes; the action performs no file or network operation.
