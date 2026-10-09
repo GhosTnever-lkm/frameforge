@@ -291,6 +291,86 @@ class ReferenceRunUiTests(unittest.TestCase):
         self.assertFalse(self.window.export_benchmark_button.isEnabled())
         self.assertIn("Нажми «Сравнить»", self.window.benchmark_report.toPlainText())
 
+    def test_swap_pair_invalidates_old_report_without_comparing_or_recording_until_explicit_action(self):
+        runs = [
+            analyze_frame_times("before.csv", [11.0] * 8),
+            analyze_frame_times("after.csv", [14.0] * 8),
+        ]
+        self.window.benchmark_runs = runs
+        self.window._refresh_benchmark_history()
+        self.window.benchmark_before.setCurrentIndex(0)
+        self.window.benchmark_after.setCurrentIndex(1)
+        self.window.compare_benchmark_selection()
+        old_report = self.window.benchmark_report.toPlainText()
+        old_recent = list(self.window._recent_benchmark_pairs)
+        self.assertTrue(self.window.export_benchmark_button.isEnabled())
+
+        self.window.swap_benchmark_pair_button.click()
+
+        self.assertEqual(self.window.benchmark_before.currentData(), 1)
+        self.assertEqual(self.window.benchmark_after.currentData(), 0)
+        self.assertIsNone(self.window._last_benchmark_comparison)
+        self.assertFalse(self.window.export_benchmark_button.isEnabled())
+        self.assertTrue(self.window.benchmark_chart.isHidden())
+        self.assertNotEqual(self.window.benchmark_report.toPlainText(), old_report)
+        self.assertIn("Нажми «Сравнить»", self.window.benchmark_report.toPlainText())
+        self.assertEqual(self.window._recent_benchmark_pairs, old_recent)
+
+        self.window.compare_benchmark_selection()
+        self.assertEqual(self.window._recent_benchmark_pairs[0], (runs[1], runs[0]))
+        self.assertTrue(self.window.export_benchmark_button.isEnabled())
+
+    def test_swap_pair_button_disables_for_one_run_same_selection_and_stale_indices(self):
+        only_run = analyze_frame_times("only.csv", [12.0] * 8)
+        self.window.benchmark_runs = [only_run]
+        self.window._refresh_benchmark_history()
+        self.assertFalse(self.window.swap_benchmark_pair_button.isEnabled())
+
+        second = analyze_frame_times("second.csv", [15.0] * 8)
+        self.window.benchmark_runs = [only_run, second]
+        self.window._refresh_benchmark_history()
+        self.window.benchmark_after.setCurrentIndex(0)
+        self.assertFalse(self.window.swap_benchmark_pair_button.isEnabled())
+        self.window.benchmark_after.setCurrentIndex(1)
+        self.assertTrue(self.window.swap_benchmark_pair_button.isEnabled())
+
+        self.window.benchmark_before.setCurrentIndex(1)
+        self.window.benchmark_before.setItemData(1, True, Qt.ItemDataRole.UserRole)
+        self.window._update_swap_benchmark_pair_button()
+        self.assertFalse(self.window.swap_benchmark_pair_button.isEnabled())
+        bool_before = self.window.benchmark_before.currentIndex()
+        bool_after = self.window.benchmark_after.currentIndex()
+        self.window.swap_benchmark_pair()
+        self.assertEqual(self.window.benchmark_before.currentIndex(), bool_before)
+        self.assertEqual(self.window.benchmark_after.currentIndex(), bool_after)
+
+        self.window.benchmark_before.setItemData(1, 1, Qt.ItemDataRole.UserRole)
+        self.window.benchmark_before.setCurrentIndex(0)
+        before_index = self.window.benchmark_before.currentIndex()
+        after_index = self.window.benchmark_after.currentIndex()
+        self.window.benchmark_runs = [only_run]
+        self.window._update_swap_benchmark_pair_button()
+        self.assertFalse(self.window.swap_benchmark_pair_button.isEnabled())
+        self.window.swap_benchmark_pair()
+        self.assertEqual(self.window.benchmark_before.currentIndex(), before_index)
+        self.assertEqual(self.window.benchmark_after.currentIndex(), after_index)
+
+    def test_swap_clears_any_existing_report_mode_without_creating_a_recent_pair(self):
+        runs = [
+            analyze_frame_times("a.csv", [11.0] * 8),
+            analyze_frame_times("b.csv", [14.0] * 8),
+        ]
+        self.window.benchmark_runs = runs
+        self.window._refresh_benchmark_history()
+        self.window._last_benchmark_comparison = ("groups", [], [])
+        self.window.benchmark_report.setPlainText("Старый групповой отчёт")
+        self.window.export_benchmark_button.setEnabled(True)
+        self.window.swap_benchmark_pair()
+        self.assertIsNone(self.window._last_benchmark_comparison)
+        self.assertFalse(self.window.export_benchmark_button.isEnabled())
+        self.assertIn("Поля A/B поменялись местами", self.window.benchmark_report.toPlainText())
+        self.assertEqual(self.window._recent_benchmark_pairs, [])
+
     def test_recent_pair_disables_after_history_eviction_and_unpin_relinks_identity(self):
         reference = replace(analyze_frame_times("reference.csv", [11.0] * 4), is_reference=True)
         ordinary = analyze_frame_times("ordinary.csv", [12.0] * 4)

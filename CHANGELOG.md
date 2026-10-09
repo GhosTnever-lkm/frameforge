@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.0 - 2026-10-09
+
+- Add an accessible A/B role-swap button for selected benchmark runs; swapping clears the current report and export until the user explicitly compares again.
+- Keep recent comparisons unchanged by a swap; after an explicit compare, the reversed ordered pair is recorded as its own session entry.
+- Disable swapping for missing, stale, same-run or non-integer selections; block selector signals during the atomic swap.
+
 ## 1.12.0 - 2026-10-09
 
 - Keep the last 10 distinct successful A/B comparisons in a collapsed, session-only list; repeat pairs move to the top.

@@ -565,6 +565,14 @@ class MainWindow(QMainWindow):
         pair_identity_row.addWidget(self.benchmark_before_identity, 1)
         pair_identity_row.addWidget(self.benchmark_after_identity, 1)
         layout.addLayout(pair_identity_row)
+        swap_pair_row = QHBoxLayout()
+        self.swap_benchmark_pair_button = QPushButton("Поменять A ↔ B")
+        self.swap_benchmark_pair_button.setAccessibleName("Поменять местами Baseline и Variant")
+        self.swap_benchmark_pair_button.setToolTip("Меняет роли выбранных прогонов и сбрасывает текущий отчёт. Для нового нажми «Сравнить» отдельно.")
+        self.swap_benchmark_pair_button.clicked.connect(self.swap_benchmark_pair)
+        swap_pair_row.addWidget(self.swap_benchmark_pair_button)
+        swap_pair_row.addStretch(1)
+        layout.addLayout(swap_pair_row)
         compare_scope_hint = QLabel("Поиск замера ниже меняет A/B только после назначения. Фильтр списка истории влияет только на группы.")
         compare_scope_hint.setObjectName("muted")
         layout.addWidget(compare_scope_hint)
@@ -837,6 +845,18 @@ class MainWindow(QMainWindow):
             run = self.benchmark_runs[index]
             identity = " · ".join(("★ ЭТАЛОН" if run.is_reference else "", run.name, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.game or "Игра не указана", run.scene or "сцена не указана"))
             label.setText(f"{side} #{index + 1:03d}: {identity}")
+        self._update_swap_benchmark_pair_button()
+
+    def _update_swap_benchmark_pair_button(self):
+        if not hasattr(self, "swap_benchmark_pair_button"):
+            return
+        before_index = self.benchmark_before.currentData()
+        after_index = self.benchmark_after.currentData()
+        valid = all(
+            not isinstance(index, bool) and isinstance(index, int) and 0 <= index < len(self.benchmark_runs)
+            for index in (before_index, after_index)
+        )
+        self.swap_benchmark_pair_button.setEnabled(valid and before_index != after_index)
 
     def _search_benchmark_pairs(self, query: str):
         if not hasattr(self, "benchmark_pair_search_results"):
@@ -917,6 +937,37 @@ class MainWindow(QMainWindow):
             self.benchmark_chart.hide()
             self.benchmark_chart_title.hide()
             self.benchmark_chart_note.hide()
+
+    def swap_benchmark_pair(self, *_args):
+        before_index = self.benchmark_before.currentData()
+        after_index = self.benchmark_after.currentData()
+        if (
+            isinstance(before_index, bool) or not isinstance(before_index, int)
+            or isinstance(after_index, bool) or not isinstance(after_index, int)
+            or not 0 <= before_index < len(self.benchmark_runs)
+            or not 0 <= after_index < len(self.benchmark_runs)
+            or before_index == after_index
+        ):
+            return
+        before_signals = self.benchmark_before.blockSignals(True)
+        after_signals = self.benchmark_after.blockSignals(True)
+        try:
+            new_before = self.benchmark_before.findData(after_index)
+            new_after = self.benchmark_after.findData(before_index)
+            if new_before < 0 or new_after < 0:
+                return
+            self.benchmark_before.setCurrentIndex(new_before)
+            self.benchmark_after.setCurrentIndex(new_after)
+        finally:
+            self.benchmark_before.blockSignals(before_signals)
+            self.benchmark_after.blockSignals(after_signals)
+        self._refresh_benchmark_pair_identities()
+        self._last_benchmark_comparison = None
+        self.export_benchmark_button.setEnabled(False)
+        self.benchmark_chart.hide()
+        self.benchmark_chart_title.hide()
+        self.benchmark_chart_note.hide()
+        self.benchmark_report.setPlainText("Поля A/B поменялись местами. Нажми «Сравнить», чтобы построить новый отчёт и экспорт.")
 
     def _filter_benchmark_history(self, query: str):
         if not hasattr(self, "benchmark_list") or not hasattr(self, "benchmark_history_count"):
