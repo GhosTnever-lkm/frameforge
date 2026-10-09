@@ -9,11 +9,11 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QPushButton
 
 from frameforge.core.benchmark import analyze_frame_times
 from frameforge.core.benchmark_store import BenchmarkStore, MAX_HISTORY
-from frameforge.ui.main_window import MainWindow
+from frameforge.ui.main_window import MainWindow, ProbableDuplicateDialog
 
 
 class ReferenceRunUiTests(unittest.TestCase):
@@ -33,6 +33,97 @@ class ReferenceRunUiTests(unittest.TestCase):
         self.app.processEvents()
         self.app_data_patch.stop()
         self.temp.cleanup()
+
+    def test_probable_duplicate_dialog_defaults_to_skip_but_allows_explicit_add(self):
+        dialog = ProbableDuplicateDialog([(2, "capture.csv", "запись истории #4: capture.csv")], 3)
+        self.assertEqual(dialog.positions_to_keep(), set())
+        position, checkbox = dialog.choices[0]
+        self.assertEqual(position, 2)
+        self.assertFalse(checkbox.isChecked())
+        checkbox.setChecked(True)
+        self.assertEqual(dialog.positions_to_keep(), {2})
+        self.assertIn("не доказывает", dialog.layout().itemAt(0).widget().text())
+
+    def test_probable_duplicate_dialog_safe_default_keeps_unique_batch_action_distinct_from_cancel(self):
+        dialog = ProbableDuplicateDialog([(1, "repeat.csv", "запись истории #1: old.csv")], 2)
+        dialog.choices[0][1].setChecked(True)
+        buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+        buttons["Добавить уникальные, пропустить совпадения"].click()
+        self.assertEqual(dialog.result(), int(QDialog.DialogCode.Accepted))
+        self.assertEqual(dialog.positions_to_keep(), set())
+
+        cancel = ProbableDuplicateDialog([(1, "repeat.csv", "запись истории #1: old.csv")], 2)
+        buttons = {button.text(): button for button in cancel.findChildren(QPushButton)}
+        buttons["Отменить весь импорт"].click()
+        self.assertEqual(cancel.result(), int(QDialog.DialogCode.Rejected))
+
+    def test_import_skips_probable_duplicate_by_default_without_touching_history(self):
+        existing = analyze_frame_times("original.csv", [16.0] * 40, game=self.window.benchmark_game.currentData() or "")
+        self.window.benchmark_runs = [existing]
+        self.window.benchmark_store.save([existing])
+        with (
+            patch("frameforge.ui.main_window.QFileDialog.getOpenFileNames", return_value=(["repeat.csv"], "CSV files (*.csv)")),
+            patch("frameforge.ui.main_window.load_benchmark_csv", return_value=(analyze_frame_times("repeat.csv", [16.0] * 40), [])),
+            patch.object(ProbableDuplicateDialog, "exec", return_value=QDialog.DialogCode.Accepted),
+            patch.object(QMessageBox, "information") as info,
+        ):
+            self.window.import_benchmark()
+        self.assertEqual(self.window.benchmark_runs, [existing])
+        self.assertEqual(self.window.benchmark_store.load(), [existing])
+        info.assert_called_once()
+
+    def test_import_allows_user_to_keep_a_flagged_duplicate(self):
+        existing = analyze_frame_times("original.csv", [16.0] * 40, game=self.window.benchmark_game.currentData() or "")
+        self.window.benchmark_runs = [existing]
+        self.window.benchmark_store.save([existing])
+
+        def accept_and_check(dialog):
+            self.assertFalse(dialog.choices[0][1].isChecked())
+            dialog.choices[0][1].setChecked(True)
+            return QDialog.DialogCode.Accepted
+
+        with (
+            patch("frameforge.ui.main_window.QFileDialog.getOpenFileNames", return_value=(["repeat.csv"], "CSV files (*.csv)")),
+            patch("frameforge.ui.main_window.load_benchmark_csv", return_value=(analyze_frame_times("repeat.csv", [16.0] * 40), [])),
+            patch.object(ProbableDuplicateDialog, "exec", accept_and_check),
+            patch.object(QMessageBox, "information"),
+        ):
+            self.window.import_benchmark()
+        self.assertEqual([run.name for run in self.window.benchmark_runs], ["original.csv", "repeat.csv"])
+
+    def test_duplicate_in_batch_is_prompted_without_reordering_kept_runs(self):
+        runs = [analyze_frame_times(name, [value] * 40) for name, value in (("first.csv", 16.0), ("middle.csv", 17.0), ("repeat.csv", 16.0))]
+
+        def accept_and_check(dialog):
+            self.assertEqual(len(dialog.choices), 1)
+            self.assertIn("выбранный CSV #1: first.csv", " ".join(widget.text() for widget in dialog.findChildren(QLabel)))
+            dialog.choices[0][1].setChecked(True)
+            return QDialog.DialogCode.Accepted
+
+        paths = ["first.csv", "middle.csv", "repeat.csv"]
+        with (
+            patch("frameforge.ui.main_window.QFileDialog.getOpenFileNames", return_value=(paths, "CSV files (*.csv)")),
+            patch("frameforge.ui.main_window.load_benchmark_csv", side_effect=[(run, []) for run in runs]),
+            patch.object(ProbableDuplicateDialog, "exec", accept_and_check),
+            patch.object(QMessageBox, "information"),
+        ):
+            self.window.import_benchmark()
+        self.assertEqual([run.name for run in self.window.benchmark_runs], ["first.csv", "middle.csv", "repeat.csv"])
+
+    def test_continue_selected_with_no_checks_still_imports_unique_csvs(self):
+        duplicate = analyze_frame_times("already.csv", [16.0] * 40, game=self.window.benchmark_game.currentData() or "")
+        unique = analyze_frame_times("unique.csv", [17.0] * 40)
+        self.window.benchmark_runs = [duplicate]
+        self.window.benchmark_store.save([duplicate])
+        paths = ["repeat.csv", "unique.csv"]
+        with (
+            patch("frameforge.ui.main_window.QFileDialog.getOpenFileNames", return_value=(paths, "CSV files (*.csv)")),
+            patch("frameforge.ui.main_window.load_benchmark_csv", side_effect=[(duplicate, []), (unique, [])]),
+            patch.object(ProbableDuplicateDialog, "exec", return_value=QDialog.DialogCode.Accepted),
+            patch.object(QMessageBox, "information"),
+        ):
+            self.window.import_benchmark()
+        self.assertEqual([run.name for run in self.window.benchmark_runs], ["already.csv", "unique.csv"])
 
     def test_pin_unpin_persists_and_keeps_group_and_pair_identity(self):
         self.window.benchmark_runs = [analyze_frame_times(f"run-{index}.csv", [10 + index]) for index in range(4)]

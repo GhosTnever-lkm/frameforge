@@ -65,6 +65,35 @@ class Benchmark:
     is_reference: bool = False
 
 
+def benchmark_import_fingerprint(run: Benchmark) -> tuple[object, ...] | None:
+    """Return a conservative aggregate-only duplicate hint, or None for tiny runs.
+
+    Equal fingerprints are only a probable duplicate: distinct captures can have
+    identical aggregates. The caller must let the user keep either run.
+    """
+    if run.sample_count < 30:
+        return None
+    return (
+        run.game,
+        run.scene,
+        run.metric_kind,
+        run.sample_count,
+        run.average_fps,
+        run.one_percent_low_fps,
+        run.p99_frame_time_ms,
+        run.median_frame_time_ms,
+        run.min_frame_time_ms,
+        run.max_frame_time_ms,
+        run.frame_time_buckets,
+        run.frame_timing,
+        run.frame_budget_counts,
+        run.change_note,
+        run.setting_key,
+        run.setting_value,
+        run.manual_changes,
+    )
+
+
 PRESENTMON_FRAME_TIMING_COLUMNS = {
     "cpu_busy": ("mscpubusy", "cpubusy"),
     "gpu_time": ("msgputime", "gputime"),

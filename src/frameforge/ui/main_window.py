@@ -10,7 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication, QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
     QMenu, QScrollArea, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -19,7 +19,7 @@ from .. import __version__
 from ..catalog import GUIDE, GUIDE_CHECKLISTS, GUIDE_CHECKLIST_LABELS, GUIDE_GAMES, GUIDES, GAMES
 from ..core.apply import apply_profile_setting, build_profile_bytes, make_diff, read_profile_setting
 from ..core.benchmark import (
-    Benchmark, FRAME_BUDGET_FPS_PRESETS, METRIC_LABELS, compare_benchmark_groups, compare_benchmarks,
+    Benchmark, FRAME_BUDGET_FPS_PRESETS, METRIC_LABELS, benchmark_import_fingerprint, compare_benchmark_groups, compare_benchmarks,
     format_budget_threshold_label,
     export_comparison_csv, export_comparison_json, export_group_comparison_csv,
     export_group_comparison_json, load_benchmark_csv,
@@ -42,6 +42,51 @@ TEXT = "#edf3ff"
 MUTED = "#a1b1cc"
 ACCENT = "#72a8ff"
 GREEN = "#45d6a0"
+
+
+class ProbableDuplicateDialog(QDialog):
+    """Let users skip or explicitly keep aggregate-matching CSV imports."""
+
+    def __init__(self, duplicates: list[tuple[int, str, str]], total: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Возможные дубликаты CSV")
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        explanation = QLabel(
+            f"Найдены возможные дубликаты: {len(duplicates)} из {total}. "
+            "Сводные метрики совпадают; это не доказывает, что CSV или захват одинаковые. "
+            "По умолчанию отмеченные файлы будут пропущены. Отметь файл, чтобы добавить его всё равно."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        self.choices: list[tuple[int, QCheckBox]] = []
+        for position, filename, prior in duplicates:
+            row = QHBoxLayout()
+            checkbox = QCheckBox(f"Добавить всё равно: {filename}")
+            checkbox.setAccessibleName(f"Добавить возможный дубликат {filename} всё равно")
+            row.addWidget(checkbox)
+            matched_label = QLabel(f"Совпадает с {prior}")
+            matched_label.setWordWrap(True)
+            row.addWidget(matched_label, 1)
+            layout.addLayout(row)
+            self.choices.append((position, checkbox))
+        buttons = QDialogButtonBox()
+        safe_default = buttons.addButton("Добавить уникальные, пропустить совпадения", QDialogButtonBox.ButtonRole.AcceptRole)
+        add_selected = buttons.addButton("Продолжить выбранные", QDialogButtonBox.ButtonRole.AcceptRole)
+        cancel_all = buttons.addButton("Отменить весь импорт", QDialogButtonBox.ButtonRole.RejectRole)
+        safe_default.setDefault(True)
+        safe_default.clicked.connect(self._accept_with_duplicates_skipped)
+        add_selected.clicked.connect(self.accept)
+        cancel_all.clicked.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept_with_duplicates_skipped(self):
+        for _, checkbox in self.choices:
+            checkbox.setChecked(False)
+        self.accept()
+
+    def positions_to_keep(self) -> set[int]:
+        return {position for position, checkbox in self.choices if checkbox.isChecked()}
 
 
 def app_data_dir() -> Path:
@@ -557,6 +602,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Снимок настройки не добавлен", f"Не удалось безопасно прочитать разрешённый параметр. CSV не импортирован.\n{exc}")
                 return
         imported: list[Benchmark] = []
+        imported_names: list[tuple[int, str]] = []
         file_warnings: list[str] = []
         file_errors: list[str] = []
         manual_changes = tuple(
@@ -587,6 +633,7 @@ class MainWindow(QMainWindow):
                     setting_value=setting_value,
                     manual_changes=manual_changes,
                 ))
+                imported_names.append((selected_index, Path(path).name))
                 file_warnings.extend(f"#{selected_index} {Path(path).name}: {warning}" for warning in warnings)
             except (OSError, UnicodeError, ValueError, csv.Error) as exc:
                 file_errors.append(f"#{selected_index} {Path(path).name}: {exc}")
@@ -597,8 +644,48 @@ class MainWindow(QMainWindow):
             details = "\n".join(details_lines) or "Не удалось получить данные из выбранных файлов."
             QMessageBox.warning(self, "CSV не загружены", details)
             return
+        # Aggregate equality is only a hint: two separate captures may coincide.
+        # Keep one copy automatically, but ask before skipping any probable duplicate.
+        seen: dict[tuple[object, ...], str] = {}
+        for old_index, old_run in enumerate(self.benchmark_runs, start=1):
+            fingerprint = benchmark_import_fingerprint(old_run)
+            if fingerprint is not None:
+                pin_label = " · эталон" if old_run.is_reference else ""
+                seen.setdefault(fingerprint, f"запись истории #{old_index}{pin_label}: {old_run.name}")
+        accepted: list[Benchmark] = []
+        probable_duplicates: list[tuple[int, str, str]] = []
+        for position, run in enumerate(imported):
+            selected_index, filename = imported_names[position]
+            fingerprint = benchmark_import_fingerprint(run)
+            prior = seen.get(fingerprint) if fingerprint is not None else None
+            if prior is not None:
+                probable_duplicates.append((position, filename, prior))
+                continue
+            accepted.append(run)
+            if fingerprint is not None:
+                seen[fingerprint] = f"выбранный CSV #{selected_index}: {filename}"
+        keep_duplicates: set[int] = set()
+        if probable_duplicates:
+            dialog = ProbableDuplicateDialog(probable_duplicates, len(imported), self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            keep_duplicates = dialog.positions_to_keep()
+            duplicate_positions = {position for position, _, _ in probable_duplicates}
+            accepted = [run for position, run in enumerate(imported) if position not in duplicate_positions or position in keep_duplicates]
+        if not accepted:
+            details = ["Все корректные CSV отмечены как возможные дубликаты и пропущены; история не изменена."]
+            if file_errors:
+                details.append("Не импортировано из-за ошибок:\n" + "\n".join(file_errors[:10]))
+                if len(file_errors) > 10:
+                    details.append(f"… и ещё {len(file_errors) - 10} файлов с ошибками")
+            if file_warnings:
+                details.append("Предупреждения импорта:\n" + "\n".join(file_warnings[:12]))
+                if len(file_warnings) > 12:
+                    details.append(f"… и ещё {len(file_warnings) - 12} предупреждений")
+            QMessageBox.information(self, "Новые CSV не добавлены", "\n\n".join(details))
+            return
         try:
-            updated_runs = retain_benchmark_runs(self.benchmark_runs + imported)
+            updated_runs = retain_benchmark_runs(self.benchmark_runs + accepted)
         except ValueError as exc:
             QMessageBox.warning(self, "Не удалось обновить историю", str(exc))
             return
@@ -617,6 +704,12 @@ class MainWindow(QMainWindow):
         self._refresh_benchmark_checklist()
         self._refresh_benchmark_history()
         notices = []
+        if probable_duplicates:
+            skipped = len(probable_duplicates) - len(keep_duplicates)
+            notices.append(
+                f"Возможные дубликаты: добавлено несмотря на предупреждение — {len(keep_duplicates)}; пропущено — {skipped}. "
+                "Решение принято только по совпадению сводных метрик."
+            )
         if file_errors:
             error_lines = file_errors[:10]
             if len(file_errors) > 10:
@@ -628,7 +721,7 @@ class MainWindow(QMainWindow):
                 warning_lines.append(f"… и ещё {len(file_warnings) - 12} предупреждений")
             notices.append("Предупреждения импорта:\n" + "\n".join(warning_lines))
         if notices:
-            QMessageBox.information(self, f"Импортировано {len(imported)} из {len(paths)} CSV", "\n\n".join(notices))
+            QMessageBox.information(self, f"Импортировано {len(accepted)} из {len(paths)} CSV", "\n\n".join(notices))
         if len(self.benchmark_runs) >= 2:
             self.benchmark_before.setCurrentIndex(len(self.benchmark_runs) - 2)
             self.benchmark_after.setCurrentIndex(len(self.benchmark_runs) - 1)

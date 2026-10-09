@@ -13,7 +13,7 @@ from unittest.mock import patch
 from frameforge.core.apply import apply_grass_distance, apply_profile_setting, build_profile_bytes, build_tuned_bytes, make_diff, read_grass_distance, read_profile_setting
 from frameforge.core.backup import create_byte_backup, restore_from_backup
 from frameforge.core.benchmark import (
-    Benchmark, FrameTimingSummary, FRAME_BUDGET_FPS_PRESETS, FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks,
+    Benchmark, FrameTimingSummary, FRAME_BUDGET_FPS_PRESETS, FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, benchmark_import_fingerprint, compare_benchmarks,
     compare_benchmark_groups, export_comparison_csv, export_comparison_json, format_budget_threshold_label,
     export_group_comparison_csv, export_group_comparison_json, load_benchmark_csv,
     frame_budget_share, frame_time_spread_ms, load_frame_time_csv, summarize_benchmark_group,
@@ -43,6 +43,37 @@ class FrameForgeCoreTests(unittest.TestCase):
     def tearDown(self):
         self.documents_root_patch.stop()
         self.temp.cleanup()
+
+    def test_import_fingerprint_matches_same_aggregates_across_filenames(self):
+        first = analyze_frame_times("one.csv", [16.0] * 40, game="Game", scene="Scene")
+        second = replace(first, name="renamed.csv")
+        self.assertEqual(benchmark_import_fingerprint(first), benchmark_import_fingerprint(second))
+
+    def test_import_fingerprint_requires_same_game_scene_and_metric(self):
+        baseline = analyze_frame_times("a.csv", [16.0] * 40, game="Game", scene="Scene", metric_kind="displayed")
+        self.assertNotEqual(benchmark_import_fingerprint(baseline), benchmark_import_fingerprint(replace(baseline, scene="Other")))
+        self.assertNotEqual(benchmark_import_fingerprint(baseline), benchmark_import_fingerprint(replace(baseline, game="Other")))
+        self.assertNotEqual(benchmark_import_fingerprint(baseline), benchmark_import_fingerprint(replace(baseline, metric_kind="generic")))
+
+    def test_import_fingerprint_skips_short_records(self):
+        short = analyze_frame_times("short.csv", [16.0] * 29, game="Game", scene="Scene")
+        self.assertIsNone(benchmark_import_fingerprint(short))
+
+    def test_import_fingerprint_requires_all_aggregate_fields_to_match(self):
+        baseline = analyze_frame_times("a.csv", [16.0] * 40, game="Game", scene="Scene")
+        changed = replace(baseline, average_fps=baseline.average_fps + 0.001)
+        self.assertNotEqual(benchmark_import_fingerprint(baseline), benchmark_import_fingerprint(changed))
+
+    def test_import_fingerprint_includes_user_record_context(self):
+        baseline = analyze_frame_times("a.csv", [16.0] * 40, game="Game", scene="Scene")
+        variants = (
+            replace(baseline, change_note="different context"),
+            replace(baseline, setting_key="iMinGrassSize", setting_value=60),
+            replace(baseline, manual_changes=("shadows",)),
+        )
+        for variant in variants:
+            with self.subTest(variant=variant):
+                self.assertNotEqual(benchmark_import_fingerprint(baseline), benchmark_import_fingerprint(variant))
 
     def test_rejects_lookalike_config_outside_known_documents(self):
         outside = Path(self.temp.name) / "Elsewhere" / "My Games" / "Skyrim Special Edition" / "Skyrim.ini"

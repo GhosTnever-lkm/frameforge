@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.0 - 2026-10-09
+
+- Warn before importing CSV runs whose complete aggregate fingerprint matches an existing run or an earlier accepted file in the same batch; no history schema change or file identity is stored.
+- Treat matches as probable only: users can explicitly keep any flagged run, and captures under 30 frames skip fingerprint checks.
+
 ## 1.8.0 - 2026-10-09
 
 - Add a one-action helper to select the nearest earlier benchmark run with the same explicitly labeled game, scene and metric kind.
