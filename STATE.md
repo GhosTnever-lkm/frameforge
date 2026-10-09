@@ -1,10 +1,11 @@
 # FrameForge — project state
 
-## Подготовка к публикации — FrameForge v1.18.1
+## Published — FrameForge v1.18.1 (2026-10-10)
 
 - В CPU-presented импорте PresentMon фильтр `FrameType` теперь принимает `Application` без учёта регистра. `AMD_AFMF` и неизвестные типы по-прежнему исключаются. Версии, README и CHANGELOG синхронизированы.
-- Доступные локальные проверки: core suite 100 tests, 4 platform-dependent skips; `compileall` и `git diff --check` проходят. Полный GUI-suite требует PySide6; его Windows сборка и startup smoke выполняются в workflow.
-- Ожидаются commit/tag/release и успешные GitHub Actions для полной проверки Windows package.
+- Локально: core suite 100 tests, 4 platform-dependent skips; `compileall` и `git diff --check` проходят. Tagged GitHub Actions `38004739917` успешно завершил полный Windows test/build/archive smoke, release job прошёл; main run `38004736532` тоже завершился успешно.
+- GitHub Release: https://github.com/GhosTnever-lkm/frameforge/releases/tag/v1.18.1. Архив 46,482,621 bytes скачан; SHA-256 совпал с опубликованным sidecar: `ceaa6534e12e30c7c2c1c3708a1442bd66401d854c65cab1e0ac74b1a89b184c`.
+- Boosty анонс опубликован: https://boosty.to/azizazimov/posts/8013dede-3072-440e-ab74-052758b5a21b. Profile README v1.2.0 и portfolio v1.3.29 обновлены; profile release workflow, portfolio release workflow и Pages run успешны. На живом сайте отображаются исправление, v1.18.1 release/ZIP и анонс; GitHub profile README тоже проверен.
 
 ## Published — FrameForge v1.17.0 (2026-10-10)
 
@@ -18,7 +19,7 @@
 
 Updated: 2026-10-10
 
-## Current version
+## Historical releases
 
 - Published: [v1.14.0](https://github.com/GhosTnever-lkm/frameforge/releases/tag/v1.14.0) adds a button to copy the full pair/group report as text. It is disabled when the report is absent/stale; copied content includes CSV run names and user-entered notes, with no file or network operation.
 - Checks: 136 tests passed, 4 platform-dependent symlink tests skipped; compileall, diff check, local Windows build and extracted-app launch passed. Main CI `37878819637` and tag/release CI `37878822771` passed. Downloaded ZIP: 44,607,355 bytes; SHA-256 matches sidecar `9e102125e1b0f69088d35c2f5f8e2391719d3a1a7b2714a55584274c8f4c31eb`. DeepSeek reviewed the implementation and follow-up fixes; no concrete blocker remains.
