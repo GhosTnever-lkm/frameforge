@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QPushB
 
 from frameforge.core.benchmark import analyze_frame_times
 from frameforge.core.benchmark_store import BenchmarkStore, MAX_HISTORY
-from frameforge.ui.main_window import MainWindow, ProbableDuplicateDialog
+from frameforge.ui.main_window import MainWindow, ProbableDuplicateDialog, probable_duplicate_dialog_dimensions
 
 
 class ReferenceRunUiTests(unittest.TestCase):
@@ -35,7 +35,7 @@ class ReferenceRunUiTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_probable_duplicate_dialog_defaults_to_skip_but_allows_explicit_add(self):
-        dialog = ProbableDuplicateDialog([(2, "capture.csv", "запись истории #4: capture.csv")], 3)
+        dialog = ProbableDuplicateDialog([(2, 3, "capture.csv", "запись истории #4: capture.csv")], 3)
         self.assertEqual(dialog.positions_to_keep(), set())
         position, checkbox = dialog.choices[0]
         self.assertEqual(position, 2)
@@ -45,17 +45,37 @@ class ReferenceRunUiTests(unittest.TestCase):
         self.assertIn("не доказывает", dialog.layout().itemAt(0).widget().text())
 
     def test_probable_duplicate_dialog_safe_default_keeps_unique_batch_action_distinct_from_cancel(self):
-        dialog = ProbableDuplicateDialog([(1, "repeat.csv", "запись истории #1: old.csv")], 2)
+        dialog = ProbableDuplicateDialog([(1, 2, "repeat.csv", "запись истории #1: old.csv")], 2)
         dialog.choices[0][1].setChecked(True)
         buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
         buttons["Добавить уникальные, пропустить совпадения"].click()
         self.assertEqual(dialog.result(), int(QDialog.DialogCode.Accepted))
         self.assertEqual(dialog.positions_to_keep(), set())
 
-        cancel = ProbableDuplicateDialog([(1, "repeat.csv", "запись истории #1: old.csv")], 2)
+        cancel = ProbableDuplicateDialog([(1, 2, "repeat.csv", "запись истории #1: old.csv")], 2)
         buttons = {button.text(): button for button in cancel.findChildren(QPushButton)}
         buttons["Отменить весь импорт"].click()
         self.assertEqual(cancel.result(), int(QDialog.DialogCode.Rejected))
+
+    def test_probable_duplicate_dialog_disambiguates_repeated_filenames_and_bounds_list_height(self):
+        duplicates = [(index, index + 1, "capture.csv", f"запись истории #{index}: old.csv") for index in range(30)]
+        dialog = ProbableDuplicateDialog(duplicates, 40)
+        labels = [checkbox.text() for _, checkbox in dialog.choices]
+        self.assertIn("CSV #1 — capture.csv", labels[0])
+        self.assertIn("CSV #30 — capture.csv", labels[-1])
+        self.assertLessEqual(dialog.duplicate_list.maximumHeight(), 340)
+        self.assertEqual(dialog.duplicate_list.widget().layout().count(), 31)
+
+    def test_probable_duplicate_dialog_fits_smaller_available_screen(self):
+        width, height, scroll_min, scroll_max = probable_duplicate_dialog_dimensions(910, 512)
+        self.assertLessEqual(width, 910 - 24)
+        self.assertLessEqual(height, 512 - 24)
+        self.assertLessEqual(scroll_max, height - 200)
+        self.assertLessEqual(scroll_min, scroll_max)
+        self.assertEqual((width, height, scroll_min, scroll_max), (720, 488, 140, 288))
+        self.assertEqual(probable_duplicate_dialog_dimensions(600, 400), (576, 376, 140, 176))
+        self.assertEqual(probable_duplicate_dialog_dimensions(400, 300), (376, 276, 76, 76))
+        self.assertEqual(probable_duplicate_dialog_dimensions(320, 240), (296, 216, 48, 48))
 
     def test_import_skips_probable_duplicate_by_default_without_touching_history(self):
         existing = analyze_frame_times("original.csv", [16.0] * 40, game=self.window.benchmark_game.currentData() or "")

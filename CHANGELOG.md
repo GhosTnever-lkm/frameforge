@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.1 - 2026-10-09
+
+- Keep the probable-duplicate CSV dialog usable for long batches with a bounded, scrollable list sized for the monitor that owns the parent window.
+- Show each file's selection number alongside its basename so duplicate filenames remain distinguishable without exposing full paths.
+
 ## 1.9.0 - 2026-10-09
 
 - Warn before importing CSV runs whose complete aggregate fingerprint matches an existing run or an earlier accepted file in the same batch; no history schema change or file identity is stored.

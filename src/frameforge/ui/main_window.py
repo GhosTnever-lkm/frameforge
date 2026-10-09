@@ -44,13 +44,31 @@ ACCENT = "#72a8ff"
 GREEN = "#45d6a0"
 
 
+def probable_duplicate_dialog_dimensions(available_width: int, available_height: int) -> tuple[int, int, int, int]:
+    """Return dialog width/height and scroll-area min/max heights for the screen."""
+    width = max(240, min(720, available_width - 24))
+    height = max(180, min(520, available_height - 24))
+    scroll_max = max(48, min(340, height - 200))
+    scroll_min = min(140, scroll_max)
+    return width, height, scroll_min, scroll_max
+
+
 class ProbableDuplicateDialog(QDialog):
     """Let users skip or explicitly keep aggregate-matching CSV imports."""
 
-    def __init__(self, duplicates: list[tuple[int, str, str]], total: int, parent=None):
+    def __init__(self, duplicates: list[tuple[int, int, str, str]], total: int, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Возможные дубликаты CSV")
-        self.setMinimumWidth(560)
+        # QDialog is positioned relative to its parent; size it for that monitor,
+        # which may differ from the primary display in a multi-monitor setup.
+        screen = parent.screen() if parent else None
+        screen = screen or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else None
+        screen_width = available.width() if available else 1280
+        screen_height = available.height() if available else 720
+        width, height, scroll_min, scroll_max = probable_duplicate_dialog_dimensions(screen_width, screen_height)
+        self.setMinimumSize(min(560, width), min(320, height))
+        self.resize(width, height)
         layout = QVBoxLayout(self)
         explanation = QLabel(
             f"Найдены возможные дубликаты: {len(duplicates)} из {total}. "
@@ -59,17 +77,26 @@ class ProbableDuplicateDialog(QDialog):
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
+        self.duplicate_list = QScrollArea()
+        self.duplicate_list.setWidgetResizable(True)
+        self.duplicate_list.setMinimumHeight(scroll_min)
+        self.duplicate_list.setMaximumHeight(scroll_max)
+        duplicate_rows = QWidget()
+        duplicate_rows_layout = QVBoxLayout(duplicate_rows)
+        self.duplicate_list.setWidget(duplicate_rows)
+        layout.addWidget(self.duplicate_list, 1)
         self.choices: list[tuple[int, QCheckBox]] = []
-        for position, filename, prior in duplicates:
+        for position, selected_index, filename, prior in duplicates:
             row = QHBoxLayout()
-            checkbox = QCheckBox(f"Добавить всё равно: {filename}")
-            checkbox.setAccessibleName(f"Добавить возможный дубликат {filename} всё равно")
+            checkbox = QCheckBox(f"Добавить всё равно: CSV #{selected_index} — {filename}")
+            checkbox.setAccessibleName(f"Добавить возможный дубликат CSV #{selected_index}: {filename} всё равно")
             row.addWidget(checkbox)
             matched_label = QLabel(f"Совпадает с {prior}")
             matched_label.setWordWrap(True)
             row.addWidget(matched_label, 1)
-            layout.addLayout(row)
+            duplicate_rows_layout.addLayout(row)
             self.choices.append((position, checkbox))
+        duplicate_rows_layout.addStretch(1)
         buttons = QDialogButtonBox()
         safe_default = buttons.addButton("Добавить уникальные, пропустить совпадения", QDialogButtonBox.ButtonRole.AcceptRole)
         add_selected = buttons.addButton("Продолжить выбранные", QDialogButtonBox.ButtonRole.AcceptRole)
@@ -653,13 +680,13 @@ class MainWindow(QMainWindow):
                 pin_label = " · эталон" if old_run.is_reference else ""
                 seen.setdefault(fingerprint, f"запись истории #{old_index}{pin_label}: {old_run.name}")
         accepted: list[Benchmark] = []
-        probable_duplicates: list[tuple[int, str, str]] = []
+        probable_duplicates: list[tuple[int, int, str, str]] = []
         for position, run in enumerate(imported):
             selected_index, filename = imported_names[position]
             fingerprint = benchmark_import_fingerprint(run)
             prior = seen.get(fingerprint) if fingerprint is not None else None
             if prior is not None:
-                probable_duplicates.append((position, filename, prior))
+                probable_duplicates.append((position, selected_index, filename, prior))
                 continue
             accepted.append(run)
             if fingerprint is not None:
@@ -670,7 +697,7 @@ class MainWindow(QMainWindow):
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
             keep_duplicates = dialog.positions_to_keep()
-            duplicate_positions = {position for position, _, _ in probable_duplicates}
+            duplicate_positions = {position for position, _, _, _ in probable_duplicates}
             accepted = [run for position, run in enumerate(imported) if position not in duplicate_positions or position in keep_duplicates]
         if not accepted:
             details = ["Все корректные CSV отмечены как возможные дубликаты и пропущены; история не изменена."]
