@@ -31,6 +31,7 @@ from ..core.safety import SafetyError
 from ..core.settings_snapshot import read_allowed_setting_snapshot
 from ..core.scanner import detect_skyrim_installs, system_snapshot
 from .benchmark_chart import FrameTimeChart
+from .benchmark_search import matching_benchmark_indices
 
 
 BG = "#0b1020"
@@ -434,18 +435,59 @@ class MainWindow(QMainWindow):
         compare_row = QHBoxLayout()
         compare_row.addWidget(QLabel("Baseline (A):"))
         self.benchmark_before = QComboBox()
+        self.benchmark_before.currentIndexChanged.connect(self._benchmark_pair_selection_changed)
         compare_row.addWidget(self.benchmark_before, 1)
         compare_row.addWidget(QLabel("Variant (B):"))
         self.benchmark_after = QComboBox()
+        self.benchmark_after.currentIndexChanged.connect(self._benchmark_pair_selection_changed)
         compare_row.addWidget(self.benchmark_after, 1)
         compare_button = QPushButton("Сравнить")
         compare_button.setObjectName("primary")
         compare_button.clicked.connect(self.compare_benchmark_selection)
         compare_row.addWidget(compare_button)
         layout.addLayout(compare_row)
-        compare_scope_hint = QLabel("Baseline/Variant доступны из всей истории; фильтр ниже влияет только на список для групп.")
+        pair_identity_row = QHBoxLayout()
+        self.benchmark_before_identity = QLabel()
+        self.benchmark_before_identity.setObjectName("muted")
+        self.benchmark_before_identity.setWordWrap(True)
+        self.benchmark_before_identity.setAccessibleName("Текущий выбранный Baseline")
+        self.benchmark_after_identity = QLabel()
+        self.benchmark_after_identity.setObjectName("muted")
+        self.benchmark_after_identity.setWordWrap(True)
+        self.benchmark_after_identity.setAccessibleName("Текущий выбранный Variant")
+        pair_identity_row.addWidget(self.benchmark_before_identity, 1)
+        pair_identity_row.addWidget(self.benchmark_after_identity, 1)
+        layout.addLayout(pair_identity_row)
+        compare_scope_hint = QLabel("Поиск замера ниже меняет A/B только после назначения. Фильтр списка истории влияет только на группы.")
         compare_scope_hint.setObjectName("muted")
         layout.addWidget(compare_scope_hint)
+        pair_search_row = QHBoxLayout()
+        pair_search_row.addWidget(QLabel("Найти замер для A/B:"))
+        self.benchmark_pair_search = QLineEdit()
+        self.benchmark_pair_search.setPlaceholderText("Поиск по имени файла, игре, сцене, заметке…")
+        self.benchmark_pair_search.setAccessibleName("Поиск замера для Baseline и Variant")
+        self.benchmark_pair_search.setClearButtonEnabled(True)
+        self.benchmark_pair_search.textChanged.connect(self._search_benchmark_pairs)
+        pair_search_row.addWidget(self.benchmark_pair_search, 1)
+        layout.addLayout(pair_search_row)
+        self.benchmark_pair_search_results = QListWidget()
+        self.benchmark_pair_search_results.setAccessibleName("Результаты поиска замеров для A/B")
+        self.benchmark_pair_search_results.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.benchmark_pair_search_results.setMaximumHeight(150)
+        self.benchmark_pair_search_results.itemSelectionChanged.connect(self._update_pair_assignment_buttons)
+        self.benchmark_pair_search_status = QLabel("Начни вводить, чтобы найти замер. Поиск не меняет выбранную пару.")
+        self.benchmark_pair_search_status.setObjectName("muted")
+        layout.addWidget(self.benchmark_pair_search_results)
+        layout.addWidget(self.benchmark_pair_search_status)
+        pair_assign_row = QHBoxLayout()
+        self.assign_pair_search_baseline = QPushButton("Назначить выбранный как Baseline (A)")
+        self.assign_pair_search_baseline.clicked.connect(self._assign_pair_search_result_to_baseline)
+        self.assign_pair_search_variant = QPushButton("Назначить выбранный как Variant (B)")
+        self.assign_pair_search_variant.clicked.connect(self._assign_pair_search_result_to_variant)
+        pair_assign_row.addWidget(self.assign_pair_search_baseline)
+        pair_assign_row.addWidget(self.assign_pair_search_variant)
+        layout.addLayout(pair_assign_row)
+        self._update_pair_assignment_buttons()
         self.export_benchmark_button = QPushButton("Экспортировать сводку…")
         self.export_benchmark_button.clicked.connect(self.export_benchmark_selection)
         self.export_benchmark_button.setEnabled(False)
@@ -596,6 +638,104 @@ class MainWindow(QMainWindow):
         if self.benchmark_runs:
             self.benchmark_before.setCurrentIndex(previous_before if isinstance(previous_before, int) and previous_before < len(self.benchmark_runs) else 0)
             self.benchmark_after.setCurrentIndex(previous_after if isinstance(previous_after, int) and previous_after < len(self.benchmark_runs) else len(self.benchmark_runs) - 1)
+        self._refresh_benchmark_pair_identities()
+        if hasattr(self, "benchmark_pair_search"):
+            self._search_benchmark_pairs(self.benchmark_pair_search.text())
+
+    def _refresh_benchmark_pair_identities(self):
+        if not hasattr(self, "benchmark_before_identity"):
+            return
+        for selector, label, side in (
+            (self.benchmark_before, self.benchmark_before_identity, "Baseline (A)"),
+            (self.benchmark_after, self.benchmark_after_identity, "Variant (B)"),
+        ):
+            index = selector.currentData(Qt.ItemDataRole.UserRole)
+            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+                label.setText(f"{side}: нет выбранного замера")
+                continue
+            run = self.benchmark_runs[index]
+            identity = " · ".join((run.name, METRIC_LABELS.get(run.metric_kind, run.metric_kind), run.game or "Игра не указана", run.scene or "сцена не указана"))
+            label.setText(f"{side} #{index + 1:03d}: {identity}")
+
+    def _search_benchmark_pairs(self, query: str):
+        if not hasattr(self, "benchmark_pair_search_results"):
+            return
+        results = self.benchmark_pair_search_results
+        results.clear()
+        needle = query.strip().casefold()
+        if not needle:
+            self.benchmark_pair_search_status.setText("Начни вводить, чтобы найти замер. Поиск не меняет выбранную пару.")
+            self._update_pair_assignment_buttons()
+            return
+        for index in matching_benchmark_indices(self.benchmark_runs, needle):
+            run = self.benchmark_runs[index]
+            setting = f" · {run.setting_key}={run.setting_value}" if run.setting_key else ""
+            item = QListWidgetItem(
+                f"#{index + 1:03d} · {run.name} · {METRIC_LABELS.get(run.metric_kind, run.metric_kind)} · "
+                f"{run.game or 'Игра не указана'} · {run.scene or 'сцена не указана'}{setting}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            results.addItem(item)
+        count = results.count()
+        self.benchmark_pair_search_status.setText(
+            f"Найдено: {count}. Выбери строку и назначь её в A или B; поиск сам пару не меняет."
+            if count else "Ничего не найдено. Текущая пара A/B не изменена."
+        )
+        self._update_pair_assignment_buttons()
+
+    def _selected_pair_search_index(self) -> int | None:
+        items = self.benchmark_pair_search_results.selectedItems()
+        if not items:
+            return None
+        index = items[0].data(Qt.ItemDataRole.UserRole)
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+            return None
+        return index
+
+    def _update_pair_assignment_buttons(self, *_args):
+        if not hasattr(self, "assign_pair_search_baseline"):
+            return
+        enabled = self._selected_pair_search_index() is not None
+        self.assign_pair_search_baseline.setEnabled(enabled)
+        self.assign_pair_search_variant.setEnabled(enabled)
+
+    def _assign_pair_search_result(self, selector: QComboBox):
+        index = self._selected_pair_search_index()
+        if index is None:
+            self._update_pair_assignment_buttons()
+            return
+        if index >= selector.count() or selector.itemData(index, Qt.ItemDataRole.UserRole) != index:
+            self.benchmark_pair_search_status.setText("Не удалось назначить замер: обнови список истории и повтори.")
+            return
+        selector.setCurrentIndex(index)
+        if selector.currentData(Qt.ItemDataRole.UserRole) != index:
+            self.benchmark_pair_search_status.setText("Не удалось назначить замер: обнови список истории и повтори.")
+            return
+        self.benchmark_pair_search_status.setText(
+            f"Назначен замер #{index + 1:03d} как {'Baseline (A)' if selector is self.benchmark_before else 'Variant (B)'}."
+        )
+        self._refresh_benchmark_pair_identities()
+
+    def _assign_pair_search_result_to_baseline(self, *_args):
+        self._assign_pair_search_result(self.benchmark_before)
+
+    def _assign_pair_search_result_to_variant(self, *_args):
+        self._assign_pair_search_result(self.benchmark_after)
+
+    def _benchmark_pair_selection_changed(self, *_args):
+        self._refresh_benchmark_pair_identities()
+        comparison = self._last_benchmark_comparison
+        if comparison is None or comparison[0] != "pair":
+            return
+        self._last_benchmark_comparison = None
+        if hasattr(self, "export_benchmark_button"):
+            self.export_benchmark_button.setEnabled(False)
+        if hasattr(self, "benchmark_report"):
+            self.benchmark_report.setPlainText("Пара A/B изменена. Нажми «Сравнить», чтобы обновить отчёт и экспорт.")
+        if hasattr(self, "benchmark_chart"):
+            self.benchmark_chart.hide()
+            self.benchmark_chart_title.hide()
+            self.benchmark_chart_note.hide()
 
     def _filter_benchmark_history(self, query: str):
         if not hasattr(self, "benchmark_list") or not hasattr(self, "benchmark_history_count"):
@@ -717,11 +857,19 @@ class MainWindow(QMainWindow):
             self.benchmark_report.setPlainText(compare_benchmark_groups(group_a, group_b, target_fps))
 
     def _selected_benchmark_pair(self) -> tuple[Benchmark, Benchmark] | None:
-        if self.benchmark_before.count() < 2:
+        if self.benchmark_before.count() < 2 or self.benchmark_after.count() < 2:
             QMessageBox.information(self, "Нужны два замера", "Импортируй два CSV-файла для сравнения.")
             return None
         before_index = self.benchmark_before.currentData()
         after_index = self.benchmark_after.currentData()
+        if (
+            isinstance(before_index, bool) or not isinstance(before_index, int)
+            or isinstance(after_index, bool) or not isinstance(after_index, int)
+            or not 0 <= before_index < len(self.benchmark_runs)
+            or not 0 <= after_index < len(self.benchmark_runs)
+        ):
+            QMessageBox.information(self, "Выбор устарел", "Обнови список замеров и выбери Baseline и Variant заново.")
+            return None
         if before_index == after_index:
             QMessageBox.information(self, "Выбраны одинаковые замеры", "Для сравнения выбери два разных результата.")
             return None

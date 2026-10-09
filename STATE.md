@@ -4,6 +4,13 @@ Updated: 2026-10-09
 
 ## Current version
 
+- Published: v1.4.0, searchable benchmark history list and explicit group-filter scope.
+- GitHub Actions release run [37869978554](https://github.com/GhosTnever-lkm/frameforge/actions/runs/37869978554) passed tests, compilation, Windows build and release publication.
+- Published archive: [FrameForge v1.4.0](https://github.com/GhosTnever-lkm/frameforge/releases/tag/v1.4.0), `FrameForge-1.4.0-windows-x64.zip`; SHA-256 `e0d814e9f7c9bccb8e421a53b518a8695f3ea1a4db3469b9471913e3b831d604`.
+- Downloaded the published archive, verified its SHA-256 and launched its EXE; the app window responded with title `FrameForge — Game Tuning Studio`.
+- Portfolio updated in commit `d4798a94dd1f181a5b2c5987e59692bedff0dcbc`; Pages deployment [37870291926](https://github.com/GhosTnever-lkm/GhosTnever-lkm.github.io/actions/runs/37870291926) succeeded. Reloaded the live page and confirmed its FrameForge description, release link and Windows ZIP link show v1.4.0.
+- Local v1.4.0 baseline: 88 unit tests pass; 4 platform-dependent symlink tests are skipped; compileall, diff check and GUI smoke pass.
+
 - Published: v1.3.0, batch benchmark CSV import.
 - Local checks for v1.3.0: 88 unit tests pass; 4 platform-dependent symlink tests are skipped; compileall, diff check and GUI smokes pass.
 - GitHub Actions run [37869482152](https://github.com/GhosTnever-lkm/frameforge/actions/runs/37869482152) passed tests, Windows portable build and startup smoke.
@@ -32,16 +39,24 @@ Updated: 2026-10-09
 - Adds numbered error/warning rows and counts omitted messages; README documents automatic comparison of the newest retained pair.
 - Offscreen GUI smokes pass for mixed valid/invalid imports, 100-run truncation, group cleanup, and 13-file error summaries.
 
-## Work in progress: v1.4.0
+## v1.4.0 behavior
 
 - Adds a case-insensitive history-list filter across CSV name, game, scene, metric type, local note, setting snapshot and checklist labels. It does not alter the saved history.
 - Clears list selection when the filter changes; existing A/B group membership persists and status reports how many group members are hidden.
 - Makes the scope explicit: Baseline/Variant selectors and exports use full history; group reports use every assigned member. A successful batch import clears the active filter before showing the newest pair.
 - Local checks: 88 unit tests pass (4 symlink skips); compileall and diff check pass. GUI smokes cover case-insensitive/literal search, zero matches, reset, selection/group behavior, full combo options, hidden group counts, and import resetting the filter.
-- DeepSeek review found no confirmed blockers. Remaining design choice: the filter is only for the group-assignment list; Baseline/Variant comboboxes remain full-history.
+- DeepSeek review found no confirmed blockers. Remaining design choice: the filter is only for the group-assignment list; Baseline/Variant selectors remain full-history.
+
+## Work in progress: v1.5.0
+
+- Adds a case-insensitive literal search across the full benchmark history to locate entries for Baseline/Variant. Search results keep the source history index in `UserRole`; duplicate filenames have distinct numbered rows.
+- Typing, clearing or getting no matches never changes the selected pair. Users explicitly assign one selected result to A or B. Changing a selected pair clears its old pair report/export until a fresh comparison is run; group reports remain unaffected.
+- Adds selected-index bounds validation and five unit tests for empty query, literal/case-insensitive matching, duplicate labels/original indices, checklist labels and setting snapshots.
+- Local test suite currently: 94 passed, 4 platform-dependent symlink skips. `compileall` and `git diff --check` pass; the UI version matches `VERSION`. Qt offscreen smokes verify duplicate-name identities, a filtered row 0 assigning original history index 47, no-result behavior, invalid pair rejection, and pair-report/group-export state.
+- DeepSeek recommended this separate search/list/explicit-assignment design. Its first code-review concern about `itemData(index)` was resolved by an exact Qt smoke where result row 0 stores history index 47 and correctly assigns combo item 47; DeepSeek withdrew the concern and confirmed no blockers. The concern about batch truncation is addressed by the import flow synchronously selecting and comparing the newest retained pair before returning.
 
 ## Next
 
-1. Publish v1.4.0 after final verification.
-2. Update the portfolio card and verify the Pages deployment.
+1. Complete release gates and publish v1.5.0.
+2. Update and verify the portfolio card for v1.5.0 after publication.
 3. Continue FrameForge improvements within the five-hour work block.

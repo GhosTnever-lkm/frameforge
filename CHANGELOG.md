@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0 - 2026-10-09
+
+- Add a literal, case-insensitive search to locate benchmark runs for the full-history Baseline/Variant selectors without changing the current pair while typing.
+- Show duplicate source names as distinct numbered history results; explicitly assign a selected result to A or B using its original history index.
+- Keep no-match and cleared searches from changing the pair; require a fresh comparison after changing a pair so an old pair report cannot be exported as if current.
+- Validate selected history indices before comparison and add search-helper regression tests for empty, literal, case-insensitive, duplicate-name, checklist and setting-snapshot queries.
+
 ## 1.4.0 - 2026-10-09
 
 - Add a case-insensitive text filter for benchmark history across filename, game, scene, metric kind, local note and optional setting snapshot.
