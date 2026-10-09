@@ -4,7 +4,9 @@ Updated: 2026-10-09
 
 ## Current version
 
-- Prepared: v1.14.0 adds a button to copy the full pair/group report as text. It is disabled when the report is absent/stale; copied content includes CSV run names and user-entered notes, with no file or network operation. Local checks, build and GitHub release are pending.
+- Published: [v1.14.0](https://github.com/GhosTnever-lkm/frameforge/releases/tag/v1.14.0) adds a button to copy the full pair/group report as text. It is disabled when the report is absent/stale; copied content includes CSV run names and user-entered notes, with no file or network operation.
+- Checks: 136 tests passed, 4 platform-dependent symlink tests skipped; compileall, diff check, local Windows build and extracted-app launch passed. Main CI `37878819637` and tag/release CI `37878822771` passed. Downloaded ZIP: 44,607,355 bytes; SHA-256 matches sidecar `9e102125e1b0f69088d35c2f5f8e2391719d3a1a7b2714a55584274c8f4c31eb`. DeepSeek reviewed the implementation and follow-up fixes; no concrete blocker remains.
+- Portfolio commit `7f8e4ee` points to v1.14.0 and describes complete report copying. Pages run `37878851172` passed; live page verified release/download links and text. FrameForge commit `328c44c`.
 - Published: [v1.13.1](https://github.com/GhosTnever-lkm/frameforge/releases/tag/v1.13.1) updates the focusable Baseline/Variant selectors' accessible name and description with each selected run, including after swaps.
 - Checks: 135 tests passed, 4 platform-dependent symlink tests skipped; compileall, diff check, Windows build and extracted app launch passed. Main CI `37878411756` and tag/release CI `37878414883` passed. Downloaded ZIP: 44,607,024 bytes; SHA-256 matches sidecar `0dc3668863827503aa7cec063163c8d7f4d6bf1c5058db7af1f8f98be6968eb2`. DeepSeek confirmed the focused widget now carries the screen-reader value and the test checks it.
 - Portfolio commit `b8bd0a8` points to the v1.13.1 release and Windows ZIP and describes the accessibility improvement. Pages run `37878423288` passed; live page verified release/download links and text. FrameForge commit `8080e44`.
