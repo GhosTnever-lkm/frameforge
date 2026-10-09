@@ -31,6 +31,14 @@ FRAME_TIME_BUCKET_EDGES_MS = (
 
 
 @dataclass(frozen=True)
+class FrameTimingSummary:
+    metric_id: str
+    valid_count: int
+    median_ms: float | None
+    p95_ms: float | None
+
+
+@dataclass(frozen=True)
 class Benchmark:
     name: str
     sample_count: int
@@ -48,6 +56,19 @@ class Benchmark:
     setting_key: str = ""
     setting_value: int | None = None
     manual_changes: tuple[str, ...] = ()
+    frame_timing: tuple[FrameTimingSummary, ...] = ()
+
+
+PRESENTMON_FRAME_TIMING_COLUMNS = {
+    "cpu_busy": ("mscpubusy", "cpubusy"),
+    "gpu_time": ("msgputime", "gputime"),
+    "gpu_busy": ("msgpubusy", "gpubusy"),
+}
+FRAME_TIMING_LABELS = {
+    "cpu_busy": "CPU busy",
+    "gpu_time": "GPU time",
+    "gpu_busy": "GPU busy",
+}
 
 
 def _nearest_rank(values: list[float], percentile: float) -> float:
@@ -65,6 +86,7 @@ def analyze_frame_times(
     setting_key: str = "",
     setting_value: int | None = None,
     manual_changes: tuple[str, ...] = (),
+    frame_timing: tuple[FrameTimingSummary, ...] = (),
 ) -> Benchmark:
     if not frame_times_ms:
         raise ValueError("CSV must contain at least one frame time.")
@@ -90,6 +112,7 @@ def analyze_frame_times(
         setting_key=setting_key,
         setting_value=setting_value,
         manual_changes=manual_changes,
+        frame_timing=frame_timing,
         sample_count=len(ordered),
         average_fps=1000 / mean,
         one_percent_low_fps=1000 / slow_average,
@@ -164,6 +187,30 @@ def load_benchmark_csv(path: Path) -> tuple[Benchmark, tuple[str, ...]]:
     elif metric_kind == "cpu-presented":
         warnings.append("PresentMon не предоставил MsBetweenDisplayChange; импортирован CPU presented, он может отличаться от отображённого frametime.")
     samples: list[float] = []
+    timing_columns = {
+        metric_id: next((lookup[alias] for alias in aliases if alias in lookup), None)
+        for metric_id, aliases in PRESENTMON_FRAME_TIMING_COLUMNS.items()
+    }
+    timing_values = {metric_id: [] for metric_id, index in timing_columns.items() if index is not None}
+
+    def parse_optional_duration(raw: str) -> float | None:
+        raw = raw.strip()
+        if not raw or raw.casefold() in {"na", "n/a", "-"}:
+            return None
+        try:
+            parsed = float(raw)
+        except ValueError:
+            if delimiter != "," and raw.count(",") == 1 and "." not in raw:
+                try:
+                    parsed = float(raw.replace(",", "."))
+                except ValueError:
+                    return None
+            else:
+                return None
+        if not math.isfinite(parsed) or parsed < 0 or parsed > 10_000:
+            return None
+        return parsed
+
     dropped_invalid = 0
     dropped_malformed = 0
     dropped_type = 0
@@ -208,6 +255,12 @@ def load_benchmark_csv(path: Path) -> tuple[Benchmark, tuple[str, ...]]:
             dropped_invalid += 1
             continue
         samples.append(value)
+        for metric_id, column_index in timing_columns.items():
+            if column_index is None:
+                continue
+            optional_value = parse_optional_duration(row[column_index])
+            if optional_value is not None:
+                timing_values[metric_id].append(optional_value)
         if len(samples) > MAX_SAMPLES:
             raise ValueError(f"CSV contains more than {MAX_SAMPLES:,} frame samples.")
     if dropped_invalid:
@@ -232,7 +285,51 @@ def load_benchmark_csv(path: Path) -> tuple[Benchmark, tuple[str, ...]]:
         warnings.append("В CSV есть не-Application FrameType, но generic-колонка frame_time_ms не позволяет определить их frametime; строки не отфильтрованы автоматически.")
     if not samples:
         raise ValueError("В выбранном столбце CSV нет пригодных значений frametime.")
-    return analyze_frame_times(source.name, samples, metric_kind=metric_kind), tuple(warnings)
+    frame_timing = tuple(
+        FrameTimingSummary(
+            metric_id=metric_id,
+            valid_count=len(values),
+            median_ms=statistics.median(values) if values else None,
+            p95_ms=_nearest_rank(sorted(values), 0.95) if values else None,
+        )
+        for metric_id, values in timing_values.items()
+    )
+    return analyze_frame_times(source.name, samples, metric_kind=metric_kind, frame_timing=frame_timing), tuple(warnings)
+
+
+def _format_frame_timing_run(run: Benchmark, label: str) -> list[str]:
+    lines = [f"{label} (медиана / p95, доля строк с валидным значением):"]
+    summaries = {item.metric_id: item for item in run.frame_timing}
+    for metric_id, metric_label in FRAME_TIMING_LABELS.items():
+        item = summaries.get(metric_id)
+        if item is None:
+            lines.append(f"  {metric_label}: отсутствует в CSV.")
+            continue
+        coverage = 100 * item.valid_count / run.sample_count
+        if item.valid_count and item.median_ms is not None and item.p95_ms is not None:
+            lines.append(
+                f"  {metric_label}: {item.median_ms:.2f} / {item.p95_ms:.2f} мс; "
+                f"{item.valid_count}/{run.sample_count} ({coverage:.1f}%)."
+            )
+        else:
+            lines.append(f"  {metric_label}: нет валидных значений; 0/{run.sample_count} (0.0%).")
+    return lines
+
+
+def _format_frame_timing_comparison(before: Benchmark, after: Benchmark) -> str:
+    if not before.frame_timing and not after.frame_timing:
+        return ""
+    lines = [
+        "Дополнительные счётчики PresentMon (медиана / p95, coverage от принятых строк frametime):",
+        *_format_frame_timing_run(before, "  A"),
+        *_format_frame_timing_run(after, "  B"),
+        "Coverage считается относительно строк, принятых для основной метрики frametime, а не всех строк исходного CSV. "
+        "Нули показываются как записанные значения; их интерпретация зависит от источника. "
+        "Это описательные значения, не определение причины или ресурса, ограничивающего производительность. "
+        "GPU time и GPU busy — разные счётчики; их наличие и заполненность зависят от конфигурации PresentMon.",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
@@ -310,6 +407,7 @@ def compare_benchmarks(before: Benchmark, after: Benchmark) -> str:
         + checklist
         + metric_warning
         + context_warning
+        + _format_frame_timing_comparison(before, after)
         + f"Baseline (A): {before.name} ({before.sample_count:,} кадров)\n"
         f"  Средний FPS: {before.average_fps:.1f} · 1% low: {before.one_percent_low_fps:.1f} · p99 frametime: {before.p99_frame_time_ms:.2f} ms\n\n"
         f"Variant (B): {after.name} ({after.sample_count:,} кадров)\n"
@@ -395,6 +493,14 @@ def compare_benchmark_groups(group_a: list[Benchmark], group_b: list[Benchmark])
         "При 3–4 прогонах IQR особенно чувствителен к одному замеру; рассматривай его вместе со всеми отдельными CSV.",
         "",
     ]
+    if any(run.frame_timing for run in (*group_a, *group_b)):
+        report.extend((
+            "Дополнительные счётчики PresentMon — медиана/p95 и coverage от принятых строк frametime; "
+            "это описательные значения, а не определение причины или ресурса, ограничивающего производительность.",
+            "Coverage считается от строк, принятых для основной метрики, а не от всех строк исходного CSV. Нули сохраняются как записанные значения; их интерпретация зависит от источника.",
+            "GPU time и GPU busy — разные счётчики; наличие и заполненность зависят от конфигурации PresentMon.",
+            "",
+        ))
     for key, label, unit, _higher_is_better in GROUP_METRICS:
         a = summary_a[key]
         b = summary_b[key]
@@ -417,6 +523,7 @@ def compare_benchmark_groups(group_a: list[Benchmark], group_b: list[Benchmark])
                 f"  {index} | {run.sample_count} | {run.average_fps:.2f} | "
                 f"{run.one_percent_low_fps:.2f} | {run.p99_frame_time_ms:.2f}"
             )
+            report.extend(_format_frame_timing_run(run, f"  {group_label}{index}"))
         report.append("")
     report.append(
         "Это описательное сравнение выбранных повторов, не тест статистической значимости и не доказательство причинного эффекта. "

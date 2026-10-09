@@ -12,7 +12,7 @@ from unittest.mock import patch
 from frameforge.core.apply import apply_grass_distance, apply_profile_setting, build_profile_bytes, build_tuned_bytes, make_diff, read_grass_distance, read_profile_setting
 from frameforge.core.backup import create_byte_backup, restore_from_backup
 from frameforge.core.benchmark import (
-    Benchmark, FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks,
+    Benchmark, FrameTimingSummary, FRAME_TIME_BUCKET_EDGES_MS, analyze_frame_times, compare_benchmarks,
     compare_benchmark_groups, export_comparison_csv, export_comparison_json,
     export_group_comparison_csv, export_group_comparison_json, load_benchmark_csv,
     load_frame_time_csv, summarize_benchmark_group,
@@ -379,6 +379,35 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertTrue(any("сгенерированные кадры" in warning for warning in warnings))
         self.assertTrue(any("Пропущено некорректных" in warning for warning in warnings))
 
+    def test_presentmon_optional_frame_counters_summarize_valid_rows_and_coverage(self):
+        path = Path(self.temp.name) / "presentmon-counters.csv"
+        path.write_text(
+            "MsBetweenDisplayChange,FrameType,MsCPUBusy,MsGPUTime,MsGPUBusy\n"
+            "16,Application,4,6,5\n"
+            "16,Application,NA,8,0\n"
+            "16,Unknown,999,999,999\n"
+            "20,Application,0,4,2\n",
+            encoding="utf-8",
+        )
+        run, _ = load_benchmark_csv(path)
+        self.assertEqual(run.sample_count, 3)
+        details = {item.metric_id: item for item in run.frame_timing}
+        self.assertEqual(details["cpu_busy"], FrameTimingSummary("cpu_busy", 2, 2.0, 4.0))
+        self.assertEqual(details["gpu_time"], FrameTimingSummary("gpu_time", 3, 6.0, 8.0))
+        self.assertEqual(details["gpu_busy"], FrameTimingSummary("gpu_busy", 3, 2.0, 5.0))
+
+    def test_presentmon_legacy_optional_counter_headers_are_supported(self):
+        path = Path(self.temp.name) / "presentmon-old-counters.csv"
+        path.write_text("MsBetweenPresents,CPUBusy,GPUTime,GPUBusy\n16,5,8,4\n", encoding="utf-8")
+        run, _ = load_benchmark_csv(path)
+        self.assertEqual({item.metric_id for item in run.frame_timing}, {"cpu_busy", "gpu_time", "gpu_busy"})
+
+    def test_generic_csv_without_optional_counters_imports_without_diagnostics(self):
+        path = Path(self.temp.name) / "generic-no-counters.csv"
+        path.write_text("frame_time_ms\n16\n20\n", encoding="utf-8")
+        run, _ = load_benchmark_csv(path)
+        self.assertEqual(run.frame_timing, ())
+
     def test_generic_metric_has_priority_and_csv_headers_are_case_insensitive(self):
         path = Path(self.temp.name) / "metric-priority.csv"
         path.write_text(
@@ -486,6 +515,17 @@ class FrameForgeCoreTests(unittest.TestCase):
         before = analyze_frame_times("before", [16], metric_kind="cpu-presented")
         after = analyze_frame_times("after", [8], metric_kind="displayed")
         self.assertIn("Типы frametime различаются", compare_benchmarks(before, after))
+
+    def test_benchmark_comparison_displays_optional_counters_without_bottleneck_claims(self):
+        before = analyze_frame_times("before", [16, 20], frame_timing=(FrameTimingSummary("gpu_busy", 1, 0.0, 0.0),))
+        after = analyze_frame_times("after", [16, 20])
+        report = compare_benchmarks(before, after)
+        self.assertIn("GPU busy: 0.00 / 0.00 мс; 1/2 (50.0%)", report)
+        self.assertIn("CPU busy: отсутствует в CSV", report)
+        self.assertIn("не определение причины", report)
+        self.assertIn("не всех строк исходного CSV", report)
+        self.assertIn("Нули показываются как записанные значения", report)
+        self.assertNotIn("CPU bottleneck", report)
 
     def test_benchmark_comparison_shows_user_notes_without_causal_claim(self):
         before = analyze_frame_times("before", [16], change_note="Тени: высокие")
@@ -607,12 +647,13 @@ class FrameForgeCoreTests(unittest.TestCase):
             summarize_benchmark_group([runs[0], runs[0], runs[1]])
 
     def test_repeated_group_exports_omit_private_context_and_raw_data(self):
-        group_a = [analyze_frame_times(f"C:\\secret\\run-{i}.csv", [10, 11, 12], game="Private Game", scene="private save", change_note="local note") for i in range(3)]
-        group_b = [analyze_frame_times(f"D:\\secret\\run-{i}.csv", [8, 9, 10], game="Private Game", scene="private save", change_note="other note") for i in range(3)]
+        counter = (FrameTimingSummary("gpu_busy", 3, 4.0, 8.0),)
+        group_a = [analyze_frame_times(f"C:\\secret\\run-{i}.csv", [10, 11, 12], game="Private Game", scene="private save", change_note="local note", frame_timing=counter) for i in range(3)]
+        group_b = [analyze_frame_times(f"D:\\secret\\run-{i}.csv", [8, 9, 10], game="Private Game", scene="private save", change_note="other note", frame_timing=counter) for i in range(3)]
         csv_export = export_group_comparison_csv(group_a, group_b)
         json_export = export_group_comparison_json(group_a, group_b)
         for payload in (csv_export, json_export):
-            for private in ("secret", "run-0", "Private Game", "private save", "local note", "\nframe_time_ms\n"):
+            for private in ("secret", "run-0", "Private Game", "private save", "local note", "gpu_busy", "frame_timing", "\nframe_time_ms\n"):
                 self.assertNotIn(private, payload)
         data = json.loads(json_export)
         self.assertEqual(data["baseline_a"]["run_count"], 3)
@@ -622,9 +663,9 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertNotIn("average_fps_by_run", json_export)
 
     def test_benchmark_export_contains_aggregates_without_names_or_raw_frames(self):
-        before = analyze_frame_times("C:\\private\\before.csv", [10.0, 11.0, 12.0], game="Cyberpunk 2077", scene="Night City / save 42")
+        before = analyze_frame_times("C:\\private\\before.csv", [10.0, 11.0, 12.0], game="Cyberpunk 2077", scene="Night City / save 42", frame_timing=(FrameTimingSummary("gpu_busy", 3, 1.0, 2.0),))
         before = Benchmark(**(before.__dict__ | {"change_note": "LOCAL_ONLY C:\\Users\\private\\settings.ini", "setting_key": "iMinGrassSize", "setting_value": 40, "manual_changes": ("cyberpunk.volumetrics",)}))
-        after = analyze_frame_times("D:\\secret\\after.csv", [9.0, 10.0, 120.0], game="Cyberpunk 2077", scene="Night City / save 43", change_note="another local note")
+        after = analyze_frame_times("D:\\secret\\after.csv", [9.0, 10.0, 120.0], game="Cyberpunk 2077", scene="Night City / save 43", change_note="another local note", frame_timing=(FrameTimingSummary("cpu_busy", 2, 2.0, 3.0),))
         csv_export = export_comparison_csv(before, after)
         json_export = export_comparison_json(before, after)
         for export in (csv_export, json_export):
@@ -638,6 +679,8 @@ class FrameForgeCoreTests(unittest.TestCase):
             self.assertNotIn("local note", export)
             self.assertNotIn("iMinGrassSize", export)
             self.assertNotIn("cyberpunk.volumetrics", export)
+            self.assertNotIn("gpu_busy", export)
+            self.assertNotIn("frame_timing", export)
             self.assertNotIn("LOCAL_ONLY", export)
             self.assertNotIn("\nframe_time_ms\n", export)
         self.assertIn("average_fps", csv_export)
@@ -690,12 +733,49 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertIn("cs2.shadows", raw)
         self.assertEqual(store.load(), [run])
 
+    def test_benchmark_history_v7_roundtrips_optional_frame_timing_summaries(self):
+        store = BenchmarkStore(Path(self.temp.name) / "benchmarks.json")
+        run = analyze_frame_times(
+            "presentmon.csv", [10, 15, 25],
+            frame_timing=(FrameTimingSummary("cpu_busy", 2, 2.0, 3.0), FrameTimingSummary("gpu_busy", 3, 0.0, 5.0)),
+        )
+        store.save([run])
+        self.assertEqual(store.load(), [run])
+        raw = json.loads(store.path.read_text(encoding="utf-8"))
+        self.assertEqual(raw["schema_version"], 7)
+        self.assertEqual(raw["runs"][0]["frame_timing"][1]["metric_id"], "gpu_busy")
+
+    def test_benchmark_history_v6_migrates_with_empty_frame_timing(self):
+        path = Path(self.temp.name) / "benchmarks-v6.json"
+        run = analyze_frame_times("v6.csv", [10, 12], game="Counter-Strike 2", manual_changes=("cs2.shadows",))
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key != "frame_timing"}
+        path.write_text(json.dumps({"schema_version": 6, "runs": [row]}), encoding="utf-8")
+        store = BenchmarkStore(path)
+        loaded = store.load()
+        self.assertEqual(loaded[0].frame_timing, ())
+        store.save(loaded)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 7)
+
+    def test_benchmark_history_rejects_invalid_frame_timing_summaries(self):
+        store = BenchmarkStore(Path(self.temp.name) / "benchmarks-invalid-timing.json")
+        base = analyze_frame_times("run.csv", [10, 12])
+        invalid_summaries = (
+            (FrameTimingSummary("unknown", 1, 1.0, 1.0),),
+            (FrameTimingSummary("cpu_busy", True, 1.0, 1.0),),
+            (FrameTimingSummary("cpu_busy", 3, 1.0, 1.0),),
+            (FrameTimingSummary("gpu_busy", 1, 2.0, 1.0),),
+            (FrameTimingSummary("gpu_time", 0, 0.0, 0.0),),
+        )
+        for summaries in invalid_summaries:
+            with self.subTest(summaries=summaries), self.assertRaises(ValueError):
+                store.save([Benchmark(**(base.__dict__ | {"frame_timing": summaries}))])
+
     def test_benchmark_history_v1_migrates_legacy_rows_without_rewriting_until_save(self):
         path = Path(self.temp.name) / "benchmarks.json"
         legacy = analyze_frame_times("legacy.csv", [10, 12])
         document = {
             "schema_version": 1,
-            "runs": [{key: value for key, value in (legacy.__dict__ | {"frame_time_buckets": list(legacy.frame_time_buckets)}).items() if key not in {"game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes"}}],
+            "runs": [{key: value for key, value in (legacy.__dict__ | {"frame_time_buckets": list(legacy.frame_time_buckets)}).items() if key not in {"game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "frame_timing"}}],
         }
         path.write_text(json.dumps(document), encoding="utf-8")
         store = BenchmarkStore(path)
@@ -704,7 +784,7 @@ class FrameForgeCoreTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 1)
         store.save(loaded)
         legacy_after_save = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(legacy_after_save["schema_version"], 6)
+        self.assertEqual(legacy_after_save["schema_version"], SCHEMA_VERSION)
         self.assertIn("game", legacy_after_save["runs"][0])
         self.assertEqual(legacy_after_save["runs"][0]["metric_kind"], "generic")
         self.assertEqual(legacy_after_save["runs"][0]["change_note"], "")
@@ -714,13 +794,13 @@ class FrameForgeCoreTests(unittest.TestCase):
         tagged = Benchmark(**(loaded[0].__dict__ | {"game": "Skyrim", "scene": "Whiterun · High"}))
         store.save([tagged])
         migrated = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["schema_version"], SCHEMA_VERSION)
         self.assertEqual((store.load()[0].game, store.load()[0].scene), ("Skyrim", "Whiterun · High"))
 
     def test_benchmark_history_v2_migrates_tagged_runs(self):
         path = Path(self.temp.name) / "benchmarks.json"
         run = analyze_frame_times("legacy.csv", [10, 12], game="Skyrim", scene="Whiterun")
-        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"metric_kind", "change_note", "setting_key", "setting_value", "manual_changes"}}
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "frame_timing"}}
         path.write_text(json.dumps({"schema_version": 2, "runs": [row]}), encoding="utf-8")
         loaded = BenchmarkStore(path).load()
         self.assertEqual(loaded[0].metric_kind, "generic")
@@ -730,7 +810,7 @@ class FrameForgeCoreTests(unittest.TestCase):
     def test_benchmark_history_v3_migrates_metric_and_adds_empty_note(self):
         path = Path(self.temp.name) / "benchmarks.json"
         run = analyze_frame_times("legacy.csv", [10, 12], game="Skyrim", scene="Whiterun", metric_kind="displayed")
-        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"change_note", "setting_key", "setting_value", "manual_changes"}}
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"change_note", "setting_key", "setting_value", "manual_changes", "frame_timing"}}
         row_with_note = row | {"name": "legacy-with-note.csv", "change_note": "preserve this local note"}
         path.write_text(json.dumps({"schema_version": 3, "runs": [row, row_with_note]}), encoding="utf-8")
         loaded = BenchmarkStore(path).load()
@@ -761,7 +841,7 @@ class FrameForgeCoreTests(unittest.TestCase):
     def test_benchmark_history_v4_migrates_with_empty_setting_snapshot(self):
         path = Path(self.temp.name) / "benchmarks.json"
         run = analyze_frame_times("v4.csv", [10, 12], metric_kind="displayed", change_note="updated grass")
-        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"setting_key", "setting_value", "manual_changes"}}
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"setting_key", "setting_value", "manual_changes", "frame_timing"}}
         path.write_text(json.dumps({"schema_version": 4, "runs": [row]}), encoding="utf-8")
         loaded = BenchmarkStore(path).load()
         self.assertEqual(loaded[0].metric_kind, "displayed")
@@ -771,14 +851,14 @@ class FrameForgeCoreTests(unittest.TestCase):
     def test_benchmark_history_v5_migrates_with_empty_manual_checklist(self):
         path = Path(self.temp.name) / "benchmarks.json"
         run = analyze_frame_times("v5.csv", [10, 12], game="Counter-Strike 2", manual_changes=("cs2.shadows",))
-        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key != "manual_changes"}
+        row = {key: value for key, value in (run.__dict__ | {"frame_time_buckets": list(run.frame_time_buckets)}).items() if key not in {"manual_changes", "frame_timing"}}
         path.write_text(json.dumps({"schema_version": 5, "runs": [row]}), encoding="utf-8")
         loaded = BenchmarkStore(path).load()
         self.assertEqual(loaded[0].game, "Counter-Strike 2")
         self.assertEqual(loaded[0].manual_changes, ())
         BenchmarkStore(path).save(loaded)
         migrated = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["schema_version"], SCHEMA_VERSION)
         self.assertEqual(migrated["runs"][0]["manual_changes"], [])
 
     def test_benchmark_history_roundtrips_only_game_allowlisted_checklist_ids(self):

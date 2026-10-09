@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0 - 2026-10-09
+
+- Summarize optional PresentMon CPU Busy, GPU Time and GPU Busy counters over accepted frametime rows; show median, p95 and per-counter coverage without bottleneck claims.
+- Keep extra counter summaries local and omit them from single-run and repeated-group CSV/JSON exports.
+- Migrate benchmark history schemas v1-v6 to schema v7 with empty optional counter summaries for older runs.
+
 ## 1.0.1 - 2026-10-09
 
 - Show anonymous per-CSV benchmark rows and accepted frame counts in repeated A/B reports to make run-to-run spread visible.

@@ -8,21 +8,22 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..catalog import GUIDE_CHECKLISTS
-from .benchmark import Benchmark, FRAME_TIME_BUCKET_EDGES_MS, MAX_CHANGE_NOTE_CHARS, MAX_SAMPLES, METRIC_KINDS
+from .benchmark import Benchmark, FRAME_TIME_BUCKET_EDGES_MS, MAX_CHANGE_NOTE_CHARS, MAX_SAMPLES, METRIC_KINDS, FrameTimingSummary, PRESENTMON_FRAME_TIMING_COLUMNS
 from .profiles import TUNING_PROFILES
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 LEGACY_SCHEMA_VERSION = 1
 LABEL_SCHEMA_VERSION = 2
 METRIC_SCHEMA_VERSION = 3
 NOTE_SCHEMA_VERSION = 4
 SETTING_SNAPSHOT_SCHEMA_VERSION = 5
+FRAME_TIMING_SCHEMA_VERSION = 7
 ALLOWED_SETTING_KEYS = frozenset(profile.setting for profile in TUNING_PROFILES)
 MAX_HISTORY = 100
 MAX_STORE_BYTES = 2 * 1024 * 1024
 _FIELDS = {
     "name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "sample_count", "average_fps", "one_percent_low_fps",
-    "p99_frame_time_ms", "median_frame_time_ms", "min_frame_time_ms",
+    "p99_frame_time_ms", "median_frame_time_ms", "min_frame_time_ms", "frame_timing",
     "max_frame_time_ms", "frame_time_buckets",
 }
 
@@ -38,6 +39,7 @@ def _validate_benchmark(value: object) -> Benchmark:
     setting_key = value["setting_key"]
     setting_value = value["setting_value"]
     manual_changes = value["manual_changes"]
+    frame_timing = value["frame_timing"]
     count = value["sample_count"]
     if not isinstance(name, str) or not name or len(name) > 255 or "/" in name or "\\" in name:
         raise ValueError("Имя замера в истории некорректно.")
@@ -72,7 +74,34 @@ def _validate_benchmark(value: object) -> Benchmark:
         raise ValueError("Отметки игрового чек-листа в истории некорректны.")
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_SAMPLES:
         raise ValueError("Количество кадров в истории некорректно.")
-    numeric_fields = _FIELDS - {"name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "sample_count", "frame_time_buckets"}
+    if not isinstance(frame_timing, (list, tuple)):
+        raise ValueError("Дополнительные счётчики времени кадра в истории некорректны.")
+    allowed_frame_timing = set(PRESENTMON_FRAME_TIMING_COLUMNS)
+    summaries: list[FrameTimingSummary] = []
+    seen_metrics: set[str] = set()
+    for item in frame_timing:
+        if not isinstance(item, dict) or set(item) != {"metric_id", "valid_count", "median_ms", "p95_ms"}:
+            raise ValueError("Дополнительный счётчик времени кадра в истории некорректен.")
+        metric_id = item["metric_id"]
+        valid_count = item["valid_count"]
+        median_ms = item["median_ms"]
+        p95_ms = item["p95_ms"]
+        if not isinstance(metric_id, str) or metric_id not in allowed_frame_timing or metric_id in seen_metrics:
+            raise ValueError("Имя дополнительного счётчика времени кадра в истории некорректно.")
+        if isinstance(valid_count, bool) or not isinstance(valid_count, int) or not 0 <= valid_count <= count:
+            raise ValueError("Количество строк дополнительного счётчика в истории некорректно.")
+        if valid_count == 0:
+            if median_ms is not None or p95_ms is not None:
+                raise ValueError("Пустой дополнительный счётчик не должен иметь числовые сводки.")
+        elif (
+            isinstance(median_ms, bool) or not isinstance(median_ms, (int, float)) or not math.isfinite(median_ms)
+            or isinstance(p95_ms, bool) or not isinstance(p95_ms, (int, float)) or not math.isfinite(p95_ms)
+            or not 0 <= median_ms <= p95_ms <= 10_000
+        ):
+            raise ValueError("Значения дополнительного счётчика времени кадра в истории некорректны.")
+        seen_metrics.add(metric_id)
+        summaries.append(FrameTimingSummary(metric_id, valid_count, median_ms, p95_ms))
+    numeric_fields = _FIELDS - {"name", "game", "scene", "metric_kind", "change_note", "setting_key", "setting_value", "manual_changes", "frame_timing", "sample_count", "frame_time_buckets"}
     for field in numeric_fields:
         item = value[field]
         if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) or item <= 0:
@@ -109,6 +138,7 @@ def _validate_benchmark(value: object) -> Benchmark:
         min_frame_time_ms=float(value["min_frame_time_ms"]),
         max_frame_time_ms=float(value["max_frame_time_ms"]),
         frame_time_buckets=tuple(buckets),
+        frame_timing=tuple(summaries),
     )
 
 
@@ -130,12 +160,12 @@ class BenchmarkStore:
         if not isinstance(document, dict) or set(document) != {"schema_version", "runs"}:
             raise ValueError("Версия или структура локальной истории бенчмарков не поддерживается.")
         version = document["schema_version"]
-        if isinstance(version, bool) or not isinstance(version, int) or version not in (LEGACY_SCHEMA_VERSION, LABEL_SCHEMA_VERSION, METRIC_SCHEMA_VERSION, NOTE_SCHEMA_VERSION, SETTING_SNAPSHOT_SCHEMA_VERSION, SCHEMA_VERSION):
+        if isinstance(version, bool) or not isinstance(version, int) or version not in tuple(range(LEGACY_SCHEMA_VERSION, SCHEMA_VERSION + 1)):
             raise ValueError("Версия или структура локальной истории бенчмарков не поддерживается.")
         rows = document["runs"]
         if not isinstance(rows, list) or len(rows) > MAX_HISTORY:
             raise ValueError("Список локальных замеров некорректен.")
-        if version in (LEGACY_SCHEMA_VERSION, LABEL_SCHEMA_VERSION, METRIC_SCHEMA_VERSION, NOTE_SCHEMA_VERSION, SETTING_SNAPSHOT_SCHEMA_VERSION):
+        if version < SCHEMA_VERSION:
             migrated = []
             for row in rows:
                 if not isinstance(row, dict):
@@ -150,6 +180,8 @@ class BenchmarkStore:
                     base.setdefault("setting_key", "")
                     base.setdefault("setting_value", None)
                     base.setdefault("manual_changes", [])
+                if version < FRAME_TIMING_SCHEMA_VERSION:
+                    base.setdefault("frame_timing", [])
                 migrated.append(_validate_benchmark(base))
             return migrated
         return [_validate_benchmark(row) for row in rows]
