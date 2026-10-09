@@ -240,6 +240,56 @@ class ReferenceRunUiTests(unittest.TestCase):
         self.assertIn("Нажми «Сравнить»", self.window.benchmark_report.toPlainText())
         self.assertIn("Нажми «Сравнить»", self.window.benchmark_pair_search_status.text())
 
+    def test_same_label_history_matches_exact_game_scene_and_metric_including_reference(self):
+        rows = [
+            analyze_frame_times("first.csv", [10.0] * 40, game="Skyrim", scene="Riverwood", metric_kind="generic"),
+            replace(analyze_frame_times("pinned.csv", [11.0] * 40, game="Skyrim", scene="Riverwood", metric_kind="generic"), is_reference=True),
+            analyze_frame_times("wrong-scene.csv", [12.0] * 40, game="Skyrim", scene="Whiterun", metric_kind="generic"),
+            analyze_frame_times("wrong-metric.csv", [13.0] * 40, game="Skyrim", scene="Riverwood", metric_kind="displayed"),
+            analyze_frame_times("latest.csv", [14.0] * 40, game="Skyrim", scene="Riverwood", metric_kind="generic"),
+        ]
+        self.window.benchmark_runs = rows
+        matches = self.window.same_label_history_rows(4)
+        self.assertEqual([index for index, _run in matches], [0, 1, 4])
+        self.assertTrue(matches[1][1].is_reference)
+        self.assertEqual(self.window.same_label_history_rows(2), [(2, rows[2])])
+
+    def test_same_label_history_rejects_missing_labels_and_invalid_indices(self):
+        self.window.benchmark_runs = [analyze_frame_times("unlabelled.csv", [10.0] * 4)]
+        self.assertEqual(self.window.same_label_history_rows(0), [])
+        self.assertEqual(self.window.same_label_history_rows(-1), [])
+        self.assertEqual(self.window.same_label_history_rows(True), [])
+        self.assertEqual(self.window.same_label_history_rows(1), [])
+        with patch.object(QMessageBox, "information") as info:
+            self.assertFalse(self.window.show_same_label_history(0))
+        self.assertIn("У выбранного замера", info.call_args.args[2])
+        with patch.object(QMessageBox, "information") as stale:
+            self.assertFalse(self.window.show_same_label_history(7))
+        self.assertEqual(stale.call_args.args[1], "Выбор устарел")
+
+    def test_same_label_history_view_discloses_history_order_and_does_not_export(self):
+        self.window.benchmark_runs = [
+            analyze_frame_times("first.csv", [10.0] * 40, game="Skyrim", scene="Riverwood"),
+            analyze_frame_times("second.csv", [12.0] * 40, game="Skyrim", scene="Riverwood"),
+        ]
+        from PySide6.QtWidgets import QDialog
+        dialogs = []
+        original_init = QDialog.__init__
+
+        def capture_dialog(dialog, *args, **kwargs):
+            original_init(dialog, *args, **kwargs)
+            dialogs.append(dialog)
+
+        with patch("frameforge.ui.main_window.QDialog.__init__", capture_dialog), patch("frameforge.ui.main_window.QDialog.exec", return_value=0):
+            self.assertTrue(self.window.show_same_label_history(1))
+        dialog = dialogs[-1]
+        from PySide6.QtWidgets import QLabel, QTextEdit
+        labels = dialog.findChildren(QLabel)
+        self.assertTrue(any("не время захвата" in label.text() for label in labels))
+        text = dialog.findChild(QTextEdit).toPlainText()
+        self.assertIn("#001", text)
+        self.assertIn("#002 " + chr(0x2190) + " выбран", text)
+
     def test_previous_match_invalidates_active_group_export_too(self):
         self.window.benchmark_runs = [
             analyze_frame_times("first.csv", [10.0] * 4, game="Skyrim", scene="Riverwood"),

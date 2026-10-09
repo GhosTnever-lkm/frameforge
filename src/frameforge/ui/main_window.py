@@ -480,6 +480,11 @@ class MainWindow(QMainWindow):
         self.compare_previous_matching_button.setEnabled(False)
         self.compare_previous_matching_button.clicked.connect(self.compare_selected_with_previous_matching_run)
         layout.addWidget(self.compare_previous_matching_button)
+        self.same_label_history_button = QPushButton("Показать историю тех же игры, сцены и метрики")
+        self.same_label_history_button.setToolTip("Только чтение: показывает все прогоны с точно совпадающими метками, включая эталоны.")
+        self.same_label_history_button.setEnabled(False)
+        self.same_label_history_button.clicked.connect(self.show_selected_same_label_history)
+        layout.addWidget(self.same_label_history_button)
         reference_row = QHBoxLayout()
         self.reference_status = QLabel("Эталоны: 0/5 · закреплённые прогоны сохраняются сверх лимита истории")
         self.reference_status.setObjectName("muted")
@@ -975,7 +980,90 @@ class MainWindow(QMainWindow):
         action.triggered.connect(lambda _checked=False, run_index=index: self.compare_with_previous_matching_run(run_index))
         if not run.game.strip() or not run.scene.strip():
             action.setToolTip("Для поиска совпадения нужны заполненные метки игры и сцены.")
+        menu.addSeparator()
+        history_action = menu.addAction("Показать историю тех же игры, сцены и метрики")
+        history_action.setEnabled(bool(run.game.strip() and run.scene.strip()))
+        history_action.triggered.connect(lambda _checked=False, run_index=index: self.show_same_label_history(run_index))
+        if not run.game.strip() or not run.scene.strip():
+            history_action.setToolTip("Для поиска совпадений нужны заполненные метки игры и сцены.")
         menu.exec(self.benchmark_list.mapToGlobal(position))
+
+    def same_label_history_rows(self, index: int) -> list[tuple[int, Benchmark]]:
+        """Return exact-label history rows without claiming capture chronology."""
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+            return []
+        current = self.benchmark_runs[index]
+        if not current.game.strip() or not current.scene.strip():
+            return []
+        return [
+            (history_index, run)
+            for history_index, run in enumerate(self.benchmark_runs)
+            if run.game == current.game and run.scene == current.scene and run.metric_kind == current.metric_kind
+        ]
+
+    def show_same_label_history(self, index: int) -> bool:
+        rows = self.same_label_history_rows(index)
+        if not rows:
+            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
+                QMessageBox.information(self, "Выбор устарел", "Эта запись больше недоступна в текущей истории. Выбери её заново.")
+            else:
+                QMessageBox.information(self, "Нет меток для поиска", "У выбранного замера должны быть заполнены метки игры и сцены. История не изменена.")
+            return False
+        current = self.benchmark_runs[index]
+        if len(rows) == 1:
+            QMessageBox.information(
+                self, "История совпадающих прогонов",
+                f"Для этой игры, сцены и метрики найден только один замер: {current.name}.\n"
+                "Это не сравнение и не вывод о производительности.",
+            )
+            return True
+        lines = [
+            f"# истории\tИсточник\tСредний FPS\t1% low\tp99, мс\tFrame budget\tЭталон",
+        ]
+        target_fps = self.benchmark_frame_budget.currentData()
+        for history_index, run in rows:
+            budget = "нет данных"
+            if run.frame_budget_counts is not None and isinstance(target_fps, int) and target_fps in FRAME_BUDGET_FPS_PRESETS:
+                count = run.frame_budget_counts[FRAME_BUDGET_FPS_PRESETS.index(target_fps)]
+                budget = f"{count / run.sample_count * 100:.1f}% при {target_fps} FPS" if run.sample_count else "нет данных"
+            marker = " ← выбран" if history_index == index else ""
+            reference = "да" if run.is_reference else "нет"
+            lines.append(
+                f"#{history_index + 1:03d}{marker}\t{run.name}\t{run.average_fps:.1f}\t{run.one_percent_low_fps:.1f}\t"
+                f"{run.p99_frame_time_ms:.2f}\t{budget}\t{reference}"
+            )
+        screen = self.screen() or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else None
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Прогоны с совпадающими метками")
+        dialog.resize(
+            min(780, max(240, available.width() - 24)) if available else 780,
+            min(420, max(180, available.height() - 24)) if available else 420,
+        )
+        dialog_layout = QVBoxLayout(dialog)
+        title = QLabel(f"{current.game} · {current.scene} · {METRIC_LABELS.get(current.metric_kind, current.metric_kind)} · найдено {len(rows)}")
+        title.setWordWrap(True)
+        dialog_layout.addWidget(title)
+        caveat = QLabel("Порядок — позиция в локальной истории, не время захвата; он не доказывает хронологию, тренд или причину различий. Список только для чтения.")
+        caveat.setObjectName("muted")
+        caveat.setWordWrap(True)
+        dialog_layout.addWidget(caveat)
+        table = QTextEdit()
+        table.setReadOnly(True)
+        table.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        table.setPlainText("\n".join(lines))
+        dialog_layout.addWidget(table, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.clicked.connect(lambda _button: dialog.accept())
+        dialog_layout.addWidget(buttons)
+        dialog.exec()
+        return True
+
+    def show_selected_same_label_history(self):
+        selected = self.benchmark_list.selectedItems()
+        if len(selected) != 1:
+            return
+        self.show_same_label_history(selected[0].data(Qt.ItemDataRole.UserRole))
 
     def compare_with_previous_matching_run(self, index: int) -> bool:
         if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(self.benchmark_runs):
@@ -1134,6 +1222,8 @@ class MainWindow(QMainWindow):
         selected = self.benchmark_list.selectedItems()
         if hasattr(self, "compare_previous_matching_button"):
             self.compare_previous_matching_button.setEnabled(len(selected) == 1)
+        if hasattr(self, "same_label_history_button"):
+            self.same_label_history_button.setEnabled(len(selected) == 1)
         if len(selected) != 1:
             self.toggle_reference_button.setEnabled(False)
             self.toggle_reference_button.setText("Выбери один замер для эталона")

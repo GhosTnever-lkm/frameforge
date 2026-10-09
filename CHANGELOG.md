@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.0 - 2026-10-09
+
+- Show all benchmark runs with exactly matching game, scene and metric in a read-only history view, including pinned references; keep history schema and exports unchanged.
+- Label row numbers as local history positions, not capture timestamps or chronology; show missing legacy frame-budget summaries as unavailable.
+- Offer the view from a keyboard-accessible button and the history context menu, and explain when only one matching run exists.
+
 ## 1.9.1 - 2026-10-09
 
 - Keep the probable-duplicate CSV dialog usable for long batches with a bounded, scrollable list sized for the monitor that owns the parent window.
