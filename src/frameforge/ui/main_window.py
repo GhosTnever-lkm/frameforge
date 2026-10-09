@@ -622,7 +622,15 @@ class MainWindow(QMainWindow):
         self.export_benchmark_button = QPushButton("Экспортировать сводку…")
         self.export_benchmark_button.clicked.connect(self.export_benchmark_selection)
         self.export_benchmark_button.setEnabled(False)
-        layout.addWidget(self.export_benchmark_button)
+        self.copy_benchmark_report_button = QPushButton("Скопировать отчёт")
+        self.copy_benchmark_report_button.setAccessibleName("Скопировать текущий видимый отчёт сравнения")
+        self.copy_benchmark_report_button.setToolTip("Копирует полный текст отчёта, включая имена CSV-прогонов и введённые заметки, чтобы вставить его в другое приложение.")
+        self.copy_benchmark_report_button.clicked.connect(self.copy_benchmark_report)
+        self.copy_benchmark_report_button.setEnabled(False)
+        export_actions_row = QHBoxLayout()
+        export_actions_row.addWidget(self.export_benchmark_button)
+        export_actions_row.addWidget(self.copy_benchmark_report_button)
+        layout.addLayout(export_actions_row)
         export_scope_hint = QLabel("Экспортируется последняя выбранная пара или группа; фильтр списка на экспорт не влияет.")
         export_scope_hint.setObjectName("muted")
         layout.addWidget(export_scope_hint)
@@ -937,6 +945,8 @@ class MainWindow(QMainWindow):
         self._last_benchmark_comparison = None
         if hasattr(self, "export_benchmark_button"):
             self.export_benchmark_button.setEnabled(False)
+        if hasattr(self, "copy_benchmark_report_button"):
+            self.copy_benchmark_report_button.setEnabled(False)
         if hasattr(self, "benchmark_report"):
             self.benchmark_report.setPlainText("Пара A/B изменена. Нажми «Сравнить», чтобы обновить отчёт и экспорт.")
         if hasattr(self, "benchmark_chart"):
@@ -970,6 +980,7 @@ class MainWindow(QMainWindow):
         self._refresh_benchmark_pair_identities()
         self._last_benchmark_comparison = None
         self.export_benchmark_button.setEnabled(False)
+        self.copy_benchmark_report_button.setEnabled(False)
         self.benchmark_chart.hide()
         self.benchmark_chart_title.hide()
         self.benchmark_chart_note.hide()
@@ -1045,6 +1056,7 @@ class MainWindow(QMainWindow):
         self.benchmark_chart_note.show()
         self._last_benchmark_comparison = ("pair", before, after)
         self.export_benchmark_button.setEnabled(True)
+        self.copy_benchmark_report_button.setEnabled(True)
         if record_recent:
             self._remember_recent_benchmark_pair(before, after)
 
@@ -1115,6 +1127,7 @@ class MainWindow(QMainWindow):
             self.benchmark_after.blockSignals(False)
         self._last_benchmark_comparison = None
         self.export_benchmark_button.setEnabled(False)
+        self.copy_benchmark_report_button.setEnabled(False)
         self.benchmark_report.setPlainText("Недавняя пара подставлена. Нажми «Сравнить», чтобы построить новый отчёт и экспорт.")
         self.benchmark_chart.hide()
         self.benchmark_chart_title.hide()
@@ -1195,6 +1208,7 @@ class MainWindow(QMainWindow):
             self.benchmark_after.blockSignals(False)
         self._last_benchmark_comparison = None
         self.export_benchmark_button.setEnabled(False)
+        self.copy_benchmark_report_button.setEnabled(False)
         self.benchmark_report.setPlainText("Пара с активной базой подставлена. Нажми «Сравнить», чтобы построить новый отчёт и экспорт.")
         self.benchmark_chart.hide()
         self.benchmark_chart_title.hide()
@@ -1309,6 +1323,7 @@ class MainWindow(QMainWindow):
             self.benchmark_after.blockSignals(False)
         self._last_benchmark_comparison = None
         self.export_benchmark_button.setEnabled(False)
+        self.copy_benchmark_report_button.setEnabled(False)
         self.benchmark_report.setPlainText("Пара A/B подобрана. Нажми «Сравнить», чтобы построить новый отчёт и экспорт.")
         self.benchmark_chart.hide()
         self.benchmark_chart_title.hide()
@@ -1358,6 +1373,17 @@ class MainWindow(QMainWindow):
         self.benchmark_chart_note.hide()
         self._last_benchmark_comparison = ("groups", group_a, group_b)
         self.export_benchmark_button.setEnabled(True)
+        self.copy_benchmark_report_button.setEnabled(True)
+
+    def copy_benchmark_report(self):
+        if self._last_benchmark_comparison is None:
+            return
+        report = self.benchmark_report.toPlainText()
+        if not report.strip():
+            self.statusBar().showMessage("В отчёте нет текста для копирования.", 5000)
+            return
+        QApplication.clipboard().setText(report)
+        self.statusBar().showMessage("Текст видимого отчёта скопирован в буфер обмена.", 5000)
 
     def _refresh_benchmark_budget(self, *_args):
         comparison = self._last_benchmark_comparison
@@ -1537,6 +1563,8 @@ class MainWindow(QMainWindow):
         self._last_benchmark_comparison = None
         if hasattr(self, "export_benchmark_button"):
             self.export_benchmark_button.setEnabled(False)
+        if hasattr(self, "copy_benchmark_report_button"):
+            self.copy_benchmark_report_button.setEnabled(False)
         if hasattr(self, "benchmark_report"):
             self.benchmark_report.setPlainText("Эталон истории обновлён. Выбери пару A/B и сравни её заново.")
         if hasattr(self, "benchmark_chart"):

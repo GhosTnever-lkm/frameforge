@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.14.0 - 2026-10-09
+
+- Add a one-click plain-text copy of the complete pair or group report, including CSV run names and user-entered notes; the action performs no file or network operation.
+- Keep report copying disabled until a valid comparison exists and disable it whenever the report becomes stale.
+
 ## 1.13.1 - 2026-10-09
 
 - Update the accessible name and description of each focused Baseline and Variant selector with the selected benchmark, including after a role swap.

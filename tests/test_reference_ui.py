@@ -377,6 +377,39 @@ class ReferenceRunUiTests(unittest.TestCase):
         self.assertIn("Поля A/B поменялись местами", self.window.benchmark_report.toPlainText())
         self.assertEqual(self.window._recent_benchmark_pairs, [])
 
+    def test_copy_report_copies_exact_visible_text_and_disables_when_pair_changes(self):
+        clipboard = QApplication.clipboard()
+        previous_clipboard = clipboard.text()
+        try:
+            runs = [
+                replace(analyze_frame_times("a.csv", [11.0] * 8), change_note="before settings"),
+                replace(analyze_frame_times("b.csv", [14.0] * 8), change_note="after settings"),
+            ]
+            self.window.benchmark_runs = runs
+            self.window._refresh_benchmark_history()
+            self.window.benchmark_before.setCurrentIndex(0)
+            self.window.benchmark_after.setCurrentIndex(1)
+            self.assertFalse(self.window.copy_benchmark_report_button.isEnabled())
+            clipboard.setText("untouched")
+            self.window.copy_benchmark_report_button.click()
+            self.assertEqual(clipboard.text(), "untouched")
+
+            self.window.compare_benchmark_selection()
+            visible_report = self.window.benchmark_report.toPlainText()
+            self.assertIn("Baseline (A): a.csv", visible_report)
+            self.assertIn("Variant (B): b.csv", visible_report)
+            self.assertIn("before settings", visible_report)
+            self.assertTrue(self.window.copy_benchmark_report_button.isEnabled())
+            self.window.copy_benchmark_report_button.click()
+            self.assertEqual(clipboard.text(), visible_report)
+
+            self.window.benchmark_before.setCurrentIndex(1)
+            self.assertFalse(self.window.copy_benchmark_report_button.isEnabled())
+            self.window.copy_benchmark_report()
+            self.assertEqual(clipboard.text(), visible_report)
+        finally:
+            clipboard.setText(previous_clipboard)
+
     def test_recent_pair_disables_after_history_eviction_and_unpin_relinks_identity(self):
         reference = replace(analyze_frame_times("reference.csv", [11.0] * 4), is_reference=True)
         ordinary = analyze_frame_times("ordinary.csv", [12.0] * 4)
