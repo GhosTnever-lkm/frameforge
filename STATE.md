@@ -1,6 +1,16 @@
 # FrameForge — project state
 
-Updated: 2026-10-09
+## Published — FrameForge v1.17.0 (2026-10-10)
+
+- Commit `e92473c64dc4436d14ad6b91bb37dd1e623b637c` and tag `v1.17.0` are published. The update adds an optional Windows desktop panel that follows the visible CS:GO Legacy window in borderless-windowed mode; the in-game CFG menu remains a separate console menu.
+- GitHub Actions main run `37997389470` and tag/release run `37997573398` succeeded. The release contains `FrameForge-1.17.0-windows-x64.zip` (46,474,357 bytes) and its SHA-256 sidecar. Downloading the published archive and hashing it locally matched `effad2a620e8516611a3e52a723f63c7ac7a6eec81bb2f1a77545c6a80cbce59`.
+- Full local suite passed: 146 tests, 4 platform-dependent skips. GitHub Actions also built the portable Windows archive and completed its smoke check. The extracted app opened as `FrameForge — Game Tuning Studio` and showed v1.17.0.
+- The app's launch action created a timestamped backup of `autoexec.cfg` and wrote FrameForge's managed profile in `D:\SteamLibrary\steamapps\common\csgo legacy\csgo\cfg`. Steam then opened its login window. The actual game session and the desktop panel over live game frames were not observed.
+- FPS was not measured before/after; the release makes no fixed percentage claim. Red enemy models are not implemented; the current red option affects the crosshair only.
+- Boosty announcement: https://boosty.to/azizazimov/posts/97dd76c5-2253-4064-bc84-a15f430a48f5. AI-content was left disabled.
+- Portfolio release v1.3.22 and profile README v1.0.6 include the download and announcement links. Profile release run `37998224699`, portfolio release run `37998224894`, and Pages run `37998203080` all passed; the live page returns HTTP 200 and contains both links.
+
+Updated: 2026-10-10
 
 ## Current version
 
