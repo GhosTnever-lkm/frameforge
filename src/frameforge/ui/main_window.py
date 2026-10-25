@@ -31,6 +31,9 @@ from ..core.benchmark import (
 )
 from ..core.benchmark_store import BenchmarkStore, MAX_HISTORY, MAX_REFERENCE_RUNS, retain_benchmark_runs
 from ..core.backup import restore_from_backup, sha256
+from ..core.csgo_profile import (
+    build_csgo_profile_files, build_managed_autoexec, csgo_launch_arguments,
+)
 from ..core.config_finder import find_skyrim_config
 from ..core.game_overlay import (
     activate_window, find_csgo_window, foreground_window_handle, get_csgo_window,
@@ -335,71 +338,23 @@ class MainWindow(QMainWindow):
         if folder is None or not folder.is_dir():
             QMessageBox.information(self, "FrameForge", "Сначала выбери папку cfg игры.")
             return False
-        fps_cfg = folder / "frameforge_fps.cfg"
-        fps_lines = [
-            "// FrameForge Counter-Strike: Global Offensive Legacy performance profile",
-            f"fps_max {self.csgo_fps_limit.currentData()}",
-            "// Change one setting at a time and compare the same scene with FrameForge benchmark.",
-        ]
-        if self.csgo_dynamic_lights.isChecked():
-            fps_lines.append("r_dynamic 0")
-        if self.csgo_bloom.isChecked():
-            fps_lines.append("mat_disable_bloom 1")
-        if self.csgo_blending.isChecked():
-            fps_lines.append("mat_disable_fancy_blending 1")
-        if self.csgo_red_crosshair.isChecked():
-            fps_lines.extend((
-                "cl_crosshaircolor 5",
-                "cl_crosshaircolor_r 255",
-                "cl_crosshaircolor_g 64",
-                "cl_crosshaircolor_b 64",
-                "cl_crosshairusealpha 1",
-                "cl_crosshairalpha 255",
-            ))
-        files = {fps_cfg: "\n".join(fps_lines) + "\n"}
-        menu_lines = [
-            "// FrameForge in-game console menu for CS:GO Legacy",
-            "alias ff_menu \"echo ================= FRAMEFORGE =================; echo ff_perf - apply FPS profile; echo ff_accessibility - red high-contrast crosshair; echo ff_night - dark sky (local practice); echo ff_skyoff - hide skybox (local practice); echo ff_skyrestore - restore skybox; echo ================================================\"",
-            "alias ff_perf \"exec frameforge_fps\"",
-            "alias ff_accessibility \"exec frameforge_accessibility\"",
-            "alias ff_night \"exec frameforge_practice_sky\"",
-            "alias ff_skyoff \"sv_cheats 1; r_drawskybox 0\"",
-            "alias ff_skyrestore \"r_drawskybox 1\"",
-            "exec frameforge_fps",
-            "echo FrameForge console menu ready. Type ff_menu for commands.",
-        ]
-        files[folder / "frameforge_menu.cfg"] = "\n".join(menu_lines) + "\n"
-        if self.csgo_red_crosshair.isChecked():
-            files[folder / "frameforge_accessibility.cfg"] = (
-                "// FrameForge high-contrast red crosshair preset for CS:GO Legacy\n"
-                "// Highlights the crosshair, not enemy player models.\n"
-                "cl_crosshaircolor 5\n"
-                "cl_crosshaircolor_r 255\n"
-                "cl_crosshaircolor_g 64\n"
-                "cl_crosshaircolor_b 64\n"
-                "cl_crosshairusealpha 1\n"
-                "cl_crosshairalpha 255\n"
-            )
-        if self.csgo_dark_sky.isChecked() or self.csgo_hide_sky.isChecked():
-            sky_lines = [
-                "// FrameForge CS:GO Legacy local-practice sky options",
-                "// sv_cheats and server-side sky commands require a local/practice server that permits them.",
-                "sv_cheats 1",
-            ]
-            if self.csgo_dark_sky.isChecked():
-                sky_lines.append("sv_skyname sky_csgo_night02")
-            if self.csgo_hide_sky.isChecked():
-                sky_lines.append("r_drawskybox 0")
-            sky_lines.extend(["// Restore skybox with: r_drawskybox 1", "// Restore default sky by changing map or restarting the local server."])
-            files[folder / "frameforge_practice_sky.cfg"] = "\n".join(sky_lines) + "\n"
-        autoexec = folder / "autoexec.cfg"
-        existing_autoexec = autoexec.read_text(encoding="utf-8", errors="replace") if autoexec.exists() else ""
-        autoexec_text = self._build_csgo_managed_autoexec(existing_autoexec, self.csgo_startup_menu.isChecked())
-        if autoexec_text:
-            files[autoexec] = autoexec_text
-        backups = []
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         try:
+            autoexec = folder / "autoexec.cfg"
+            existing_autoexec = autoexec.read_text(encoding="utf-8", errors="replace") if autoexec.exists() else ""
+            files = build_csgo_profile_files(
+                folder,
+                fps_limit=self.csgo_fps_limit.currentData(),
+                dynamic_lights=self.csgo_dynamic_lights.isChecked(),
+                bloom=self.csgo_bloom.isChecked(),
+                blending=self.csgo_blending.isChecked(),
+                red_crosshair=self.csgo_red_crosshair.isChecked(),
+                startup_menu=self.csgo_startup_menu.isChecked(),
+                dark_sky=self.csgo_dark_sky.isChecked(),
+                hide_sky=self.csgo_hide_sky.isChecked(),
+                existing_autoexec=existing_autoexec,
+            )
+            backups = []
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             for destination, contents in files.items():
                 if destination.exists():
                     backup = destination.with_name(f"{destination.stem}.frameforge-{stamp}.bak{destination.suffix}")
@@ -418,22 +373,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _build_csgo_managed_autoexec(existing: str, enabled: bool) -> str:
-        marker_start = "// >>> FrameForge managed CS:GO Legacy menu >>>"
-        marker_end = "// <<< FrameForge managed CS:GO Legacy menu <<<"
-        lines = [marker_start, "exec frameforge_menu", "ff_menu", "toggleconsole", marker_end] if enabled else []
-        block = "\n".join(lines)
-        if marker_start in existing and marker_end in existing:
-            before, remainder = existing.split(marker_start, 1)
-            _, after = remainder.split(marker_end, 1)
-            result = before.rstrip()
-            if block:
-                result += "\n\n" + block
-            result += after
-            return result.lstrip("\n")
-        result = existing.rstrip()
-        if block:
-            result += ("\n\n" if result else "") + block + "\n"
-        return result
+        return build_managed_autoexec(existing, enabled)
 
     def _update_overlay_guide(self, game_name: str):
         if not hasattr(self, "overlay_tip"):
@@ -474,10 +414,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _csgo_launch_arguments(windowed_overlay: bool) -> list[str]:
-        arguments = ["-applaunch", "4465480"]
-        if windowed_overlay:
-            arguments.extend(("-windowed", "-noborder"))
-        return arguments
+        return csgo_launch_arguments(windowed_overlay)
 
     @staticmethod
     def _start_csgo_via_steam(windowed_overlay: bool = True) -> None:

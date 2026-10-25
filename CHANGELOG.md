@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.18.2 - 2026-10-25
+
+- Add `ff_night` and `ff_accessibility` menu aliases only when their matching optional CFG files are generated.
+- Extract CS:GO Legacy profile file generation into a Qt-independent helper and cover default and enabled option sets with regression tests.
+
 ## 1.18.1 - 2026-10-10
 
 - Accept PresentMon `FrameType=Application` case-insensitively when filtering CPU-presented frame samples, while continuing to exclude generated and unknown frame types.
