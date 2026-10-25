@@ -43,7 +43,7 @@ from ..core.presentmon_capture import CAPTURE_DURATIONS_SECONDS, build_presentmo
 from ..core.profiles import TUNING_PROFILES
 from ..core.safety import SafetyError
 from ..core.settings_snapshot import read_allowed_setting_snapshot
-from ..core.scanner import detect_skyrim_installs, parse_libraryfolders, steam_libraryfolders_files, system_snapshot
+from ..core.scanner import detect_skyrim_installs, find_csgo_legacy_cfg, system_snapshot
 from .benchmark_chart import FrameTimeChart
 from .benchmark_search import matching_benchmark_indices
 
@@ -176,25 +176,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _find_csgo_legacy_cfg() -> Path | None:
-        """Locate the installed Legacy config folder through Steam library manifests."""
-        for vdf in steam_libraryfolders_files():
-            try:
-                roots = [vdf.parent.parent, *parse_libraryfolders(vdf.read_text(encoding="utf-8", errors="replace"))]
-            except OSError:
-                continue
-            for root in roots:
-                manifest = root / "steamapps" / "appmanifest_4465480.acf"
-                if not manifest.is_file():
-                    continue
-                try:
-                    match = re.search(r'"installdir"\s*"([^"]+)"', manifest.read_text(encoding="utf-8", errors="replace"), re.I)
-                except OSError:
-                    continue
-                if match:
-                    cfg = root / "steamapps" / "common" / match.group(1) / "csgo" / "cfg"
-                    if cfg.is_dir():
-                        return cfg
-        return None
+        return find_csgo_legacy_cfg()
 
     def create_game_overlay(self):
         """Create the interactive panel that follows a foreground CS:GO Legacy window."""
