@@ -49,6 +49,37 @@ def detect_skyrim_installs() -> list[Path]:
     return installs
 
 
+def find_csgo_legacy_cfg() -> Path | None:
+    """Locate the CS:GO Legacy CFG folder from its Steam app manifest."""
+    for vdf in steam_libraryfolders_files():
+        try:
+            roots = [vdf.parent.parent, *parse_libraryfolders(vdf.read_text(encoding="utf-8", errors="replace"))]
+        except OSError:
+            continue
+        seen: set[Path] = set()
+        for root in roots:
+            if root in seen:
+                continue
+            seen.add(root)
+            manifest = root / "steamapps" / "appmanifest_4465480.acf"
+            if not manifest.is_file():
+                continue
+            try:
+                text = manifest.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            match = re.search(r'"installdir"\s*"([^"]+)"', text, re.I)
+            if not match:
+                continue
+            install_dir = match.group(1)
+            if install_dir in {".", ".."} or "/" in install_dir or "\\" in install_dir:
+                continue
+            cfg = root / "steamapps" / "common" / install_dir / "csgo" / "cfg"
+            if cfg.is_dir():
+                return cfg
+    return None
+
+
 def system_snapshot(home: Path | None = None) -> dict[str, str]:
     import platform
 
